@@ -1,0 +1,13 @@
+{
+  "name": "Default",
+  "tokens": {
+    "color-bg": "#14161a",
+    "color-text": "#e8eaed",
+    "color-text-muted": "#9aa0a8",
+    "color-accent": "#6ea8fe",
+    "font-body": "system-ui, sans-serif",
+    "font-size-body": "14px",
+    "space-sm": "8px",
+    "space-lg": "24px"
+  }
+}

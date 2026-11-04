@@ -1,0 +1,11 @@
+[package]
+name = "umak-scan"
+description = "Headless scan and benchmark tool that runs the core without a UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+umak-core.workspace = true

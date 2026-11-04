@@ -1,0 +1,13 @@
+{
+  "name": "Test",
+  "tokens": {
+    "color-bg": "#fff4d6",
+    "color-text": "#3b1f00",
+    "color-text-muted": "#7a4b12",
+    "color-accent": "#c2185b",
+    "font-body": "Georgia, serif",
+    "font-size-body": "18px",
+    "space-sm": "16px",
+    "space-lg": "64px"
+  }
+}

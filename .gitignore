@@ -13,3 +13,6 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Tauri generated files
+app/src-tauri/gen/

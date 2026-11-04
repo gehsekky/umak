@@ -35,4 +35,17 @@ docs/                 PLAN.md and architecture notes
 
 ## Build and test
 
-No code exists yet. Add the build, test and benchmark commands here when the workspace is created.
+Run from the repository root:
+
+- `cargo test --workspace`: Rust tests.
+- `cargo run -p umak-scan`, `cargo run -p umak-play`: headless binaries.
+- `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio`.
+
+Run from `app/` (run `npm install` first):
+
+- `npm run check`: type-check the UI.
+- `npx tauri dev`: run the app with hot reload.
+- `npx tauri build --no-bundle`: build the release executable at `target/release/umak-app.exe`.
+- Set `VITE_UMAK_THEME=test` when building to try the test theme.
+
+TypeScript stays on version 6 until `svelte-check` supports version 7.
