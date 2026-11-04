@@ -1,0 +1,15 @@
+# Local machine notes
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Rust
+target/
+
+# Node and Svelte
+node_modules/
+dist/
+.svelte-kit/
+
+# OS
+.DS_Store
+Thumbs.db
