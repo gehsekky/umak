@@ -29,7 +29,7 @@ Query times go through the full command layer, including JSON, and return 200 ro
 | Search, per keystroke | 3.3 ms | 4.8 ms | 5.3 ms | 6.6 ms |
 | Search, deep in the results | 3.2 ms | 4.7 ms | 5.4 ms | 6.5 ms |
 
-These are from the second of three runs. The first run after a build shows occasional higher maximums, up to 21 ms, but its p95 values stay within 4.9 ms. The first page after opening the database took 7.6 to 10 ms.
+These are from the second of three runs. The first of the three shows occasional higher maximums, up to 21 ms, but its p95 values stay within 4.9 ms. The first page after opening the database took 7.6 to 10 ms.
 
 ## Browsing during a scan
 
