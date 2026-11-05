@@ -19,6 +19,11 @@ offlineRoots: Array<string>,
  */
 issues: Array<ScanIssue>, canceled: boolean, threads: number, walkMs: number, 
 /**
- * Thread time summed over the workers.
+ * Thread time summed over the workers, including the file reads each one made and
+ * the opening of the file.
  */
-tagMs: number, fingerprintMs: number, writeMs: number, totalMs: number, };
+tagMs: number, fingerprintMs: number, 
+/**
+ * The part of that thread time spent waiting on file opens, reads and seeks.
+ */
+ioMs: number, bytesRead: number, readCalls: number, writeMs: number, totalMs: number, };

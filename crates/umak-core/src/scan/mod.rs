@@ -12,6 +12,7 @@ pub mod walk;
 
 use std::collections::HashMap;
 use std::fs::{self, File};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -91,9 +92,14 @@ pub struct ScanReport {
     pub canceled: bool,
     pub threads: u64,
     pub walk_ms: u64,
-    /// Thread time summed over the workers.
+    /// Thread time summed over the workers, including the file reads each one made and
+    /// the opening of the file.
     pub tag_ms: u64,
     pub fingerprint_ms: u64,
+    /// The part of that thread time spent waiting on file opens, reads and seeks.
+    pub io_ms: u64,
+    pub bytes_read: u64,
+    pub read_calls: u64,
     pub write_ms: u64,
     pub total_ms: u64,
 }
@@ -337,6 +343,48 @@ pub fn scan_paths(
 struct WorkerTimes {
     tag_ns: AtomicU64,
     fingerprint_ns: AtomicU64,
+    /// Thread time inside file open, read and seek calls.
+    io_ns: AtomicU64,
+    bytes_read: AtomicU64,
+    read_calls: AtomicU64,
+}
+
+/// A file that records the time spent waiting on the OS, so a scan can tell disk time
+/// from time in its own code.
+#[derive(Clone, Copy)]
+struct TimedFile<'a> {
+    file: &'a File,
+    times: &'a WorkerTimes,
+}
+
+impl TimedFile<'_> {
+    fn timed<T>(&self, work: impl FnOnce() -> T) -> T {
+        let started = Instant::now();
+        let result = work();
+        self.times
+            .io_ns
+            .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        result
+    }
+}
+
+impl Read for TimedFile<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let mut file = self.file;
+        let count = self.timed(|| file.read(buffer))?;
+        self.times
+            .bytes_read
+            .fetch_add(count as u64, Ordering::Relaxed);
+        self.times.read_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(count)
+    }
+}
+
+impl Seek for TimedFile<'_> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        let mut file = self.file;
+        self.timed(|| file.seek(position))
+    }
 }
 
 struct Scanned {
@@ -352,11 +400,16 @@ struct ReadFile {
 
 fn read_one(job: &Job, samples: usize, times: &WorkerTimes) -> Result<ReadFile, String> {
     let path: PathBuf = Path::new(job.root_path.as_path()).join(&job.file.rel_path);
-    let file = File::open(&path).map_err(|error| error.to_string())?;
-
     let started = Instant::now();
+    let opened = File::open(&path);
+    times
+        .io_ns
+        .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    let file = opened.map_err(|error| error.to_string())?;
+    let timed = TimedFile { file: &file, times };
+
     // A malformed file must not take the scan down with it.
-    let parsed = panic::catch_unwind(AssertUnwindSafe(|| tags::read_file(&file)))
+    let parsed = panic::catch_unwind(AssertUnwindSafe(|| tags::read_file(timed)))
         .unwrap_or_else(|_| Err("the tag reader failed on this file".to_owned()));
     times
         .tag_ns
@@ -366,7 +419,7 @@ fn read_one(job: &Job, samples: usize, times: &WorkerTimes) -> Result<ReadFile, 
     let fingerprint = if samples == 0 {
         None
     } else {
-        let mut reader = &file;
+        let mut reader = timed;
         fingerprint::fingerprint(&mut reader, samples).ok()
     };
     times
@@ -493,6 +546,9 @@ fn run_plan(
     report.tag_ms = times.tag_ns.load(Ordering::Relaxed) / 1_000_000;
     report.fingerprint_ms = times.fingerprint_ns.load(Ordering::Relaxed) / 1_000_000;
     report.write_ms = write_time.as_millis() as u64;
+    report.io_ms = times.io_ns.load(Ordering::Relaxed) / 1_000_000;
+    report.bytes_read = times.bytes_read.load(Ordering::Relaxed);
+    report.read_calls = times.read_calls.load(Ordering::Relaxed);
     Ok(())
 }
 

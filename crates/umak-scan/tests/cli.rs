@@ -151,12 +151,64 @@ fn no_scan_reads_statistics_without_touching_the_files() {
 }
 
 #[test]
+fn the_benchmark_commands_work_on_a_small_library() {
+    let dir = tempfile::tempdir().unwrap();
+    let music = dir.path().join("synthetic");
+    let music_text = music.to_str().unwrap();
+    let database = dir.path().join("umak.db");
+    let database = database.to_str().unwrap();
+
+    let text = stdout(&umak_scan(&["generate", music_text, "200"]));
+    assert!(text.contains("200 newly written"), "{text}");
+
+    let text = stdout(&umak_scan(&[database, music_text, "--json"]));
+    let output: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(output["scan"]["added"], 200);
+    assert_eq!(output["scan"]["tagErrors"], 0, "{text}");
+    assert!(output["scan"]["bytesRead"].as_u64().unwrap() > 0);
+    assert!(output["scan"]["readCalls"].as_u64().unwrap() > 200);
+    assert!(output["stats"]["artists"].as_u64().unwrap() >= 3);
+    // Accented names survive the round trip through the tags.
+    let found = stdout(&umak_scan(&[database, "--no-scan", "--json"]));
+    assert!(found.contains("\"tracks\": 200"), "{found}");
+
+    let text = stdout(&umak_scan(&["bench", database]));
+    assert!(text.contains("200 tracks"), "{text}");
+    assert!(text.contains("search, per keystroke"), "{text}");
+    assert!(!text.contains("SLOW"), "{text}");
+
+    let text = stdout(&umak_scan(&[
+        "rawio",
+        music_text,
+        "--threads",
+        "2",
+        "--bytes",
+        "1000",
+    ]));
+    let raw: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(raw["files"], 200);
+    assert_eq!(raw["bytesRead"], 200_000);
+}
+
+#[test]
+fn generate_refuses_a_folder_with_other_files() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("mine.mp3"), b"keep").unwrap();
+    let output = umak_scan(&["generate", dir.path().to_str().unwrap(), "5"]);
+    assert!(!output.status.success());
+    assert_eq!(fs::read(dir.path().join("mine.mp3")).unwrap(), b"keep");
+}
+
+#[test]
 fn bad_arguments_fail_with_usage() {
     for args in [
         &[][..],
         &["--threads"],
         &["db", "--threads", "many"],
         &["db", "--nope"],
+        &["bench"],
+        &["rawio"],
+        &["generate", "x"],
     ] {
         let output = umak_scan(args);
         assert!(!output.status.success(), "{args:?}");

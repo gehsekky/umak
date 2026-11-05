@@ -41,6 +41,7 @@ Run from the repository root:
 
 - `cargo test --workspace`: Rust tests.
 - `cargo run -p umak-scan -- <database> [folder]... [--threads N] [--samples N] [--no-scan] [--list N] [--json]`: scan folders into a database and print statistics, including album grouping and tagging problems. Keep test databases outside the repository.
+- `cargo run --release -p umak-scan -- bench <database>`: time queries against the 10 ms target. `rawio <folder>...` times listing and reading with no parsing, and `generate <folder> <count>` writes synthetic tracks. Results so far are in `docs/benchmarks-phase1.md`.
 - `cargo run -p umak-play -- <file>...`: play files. With no files it takes JSON commands on stdin. `--volume N` sets the gain, `--null-output` makes no sound, and `--check <file>...` decodes files without playing them. Setting `UMAK_PLAY_OUTPUT=null` silences the player when the app starts it, for tests.
 - `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio`.
 

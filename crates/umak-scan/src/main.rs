@@ -1,5 +1,9 @@
 //! Headless scan and benchmark tool that runs the core without a UI.
 
+mod bench;
+mod generate;
+
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
@@ -13,12 +17,21 @@ const USAGE: &str = "usage: umak-scan <database> [folder]... [options]
 
 Adds any folders as library roots, scans every root, and prints statistics.
 
+Other commands:
+
+  umak-scan bench <database>                  time queries against the 10 ms target
+  umak-scan rawio <folder>... [--threads N] [--bytes N]
+                                              time listing and reading with no parsing
+  umak-scan generate <folder> <count>         write synthetic tracks for testing
+
   --threads N   worker threads reading files
   --samples N   audio samples per fingerprint; 0 disables move detection
   --no-scan     print statistics for the database as it is
   --list N      how many albums and names to list in each section (default 20)
   --json        print everything, unabridged, as JSON";
 const DEFAULT_LIST: usize = 20;
+/// About what the scanner reads from each file, measured on a real library.
+const DEFAULT_RAW_BYTES: u64 = 128 * 1024;
 const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 const MS_PER_HOUR: f64 = 3_600_000.0;
 
@@ -70,6 +83,77 @@ fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
 struct Output<'a> {
     scan: Option<&'a ScanReport>,
     stats: &'a LibraryStats,
+}
+
+fn print_json(value: &impl Serialize) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
+    println!("{text}");
+    Ok(())
+}
+
+fn run_bench(mut args: impl Iterator<Item = String>) -> Result<ExitCode, String> {
+    let database = args.next().ok_or(USAGE)?;
+    let report = bench::queries(&database)?;
+    println!(
+        "{} tracks; first page after opening: {:.1} ms; target {} ms at the 95th percentile",
+        report.tracks, report.first_page_after_open_ms, report.target_ms
+    );
+    for timing in &report.timings {
+        println!(
+            "  {}  {:<36} {:>5} runs  median {:>6.2}  p95 {:>6.2}  p99 {:>6.2}  max {:>6.2} ms",
+            if timing.within_target { "ok  " } else { "SLOW" },
+            timing.name,
+            timing.runs,
+            timing.median_ms,
+            timing.p95_ms,
+            timing.p99_ms,
+            timing.max_ms,
+        );
+    }
+    let met = report.timings.iter().all(|timing| timing.within_target);
+    Ok(if met {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn run_raw_io(args: impl Iterator<Item = String>) -> Result<ExitCode, String> {
+    let mut folders = Vec::new();
+    let mut threads = ScanOptions::default().threads;
+    let mut bytes = DEFAULT_RAW_BYTES;
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        let mut number = |name: &str| {
+            args.next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or(format!("{name} needs a number\n\n{USAGE}"))
+        };
+        match arg.as_str() {
+            "--threads" => threads = number("--threads")? as usize,
+            "--bytes" => bytes = number("--bytes")?,
+            other if other.starts_with("--") => {
+                return Err(format!("unknown option {other}\n\n{USAGE}"));
+            }
+            _ => folders.push(arg),
+        }
+    }
+    if folders.is_empty() {
+        return Err(USAGE.to_owned());
+    }
+    print_json(&bench::raw_io(&folders, threads, bytes)?)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_generate(mut args: impl Iterator<Item = String>) -> Result<ExitCode, String> {
+    let folder = args.next().ok_or(USAGE)?;
+    let count = args
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or(USAGE)?;
+    let created = generate::generate(Path::new(&folder), count)?;
+    println!("{count} synthetic tracks in {folder}; {created} newly written");
+    Ok(ExitCode::SUCCESS)
 }
 
 fn run() -> Result<(), String> {
@@ -142,6 +226,14 @@ fn print_scan(report: &ScanReport, list: usize) {
         report.write_ms,
         report.tag_ms,
         report.fingerprint_ms,
+    );
+    let thread_ms = report.tag_ms + report.fingerprint_ms;
+    println!(
+        "  of that thread time, {} ms waiting on the disk and {} ms in our code; {:.1} MB read in {} calls",
+        report.io_ms,
+        thread_ms.saturating_sub(report.io_ms),
+        report.bytes_read as f64 / 1e6,
+        report.read_calls,
     );
     println!(
         "  {} tag errors, {} read errors",
@@ -257,8 +349,15 @@ fn print_stats(stats: &LibraryStats, list: usize) {
 }
 
 fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
+    let mut args = std::env::args().skip(1).peekable();
+    let result = match args.peek().map(String::as_str) {
+        Some("bench") => run_bench(args.skip(1)),
+        Some("rawio") => run_raw_io(args.skip(1)),
+        Some("generate") => run_generate(args.skip(1)),
+        _ => run().map(|()| ExitCode::SUCCESS),
+    };
+    match result {
+        Ok(code) => code,
         Err(error) => {
             eprintln!("umak-scan: {error}");
             ExitCode::FAILURE

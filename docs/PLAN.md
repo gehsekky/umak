@@ -230,7 +230,9 @@ SQLite in WAL mode, accessed through rusqlite, with FTS5 for search. At 30,000 t
 - Search-as-you-type returns within a few milliseconds per keystroke.
 - Opening any list view shows results with no perceptible delay.
 - A rescan with no changes finishes in seconds.
-- The database stays in the range of 15 to 30 MB.
+- The database stays around 40 MB, as measured at 30k tracks.
+
+Phase 1 results are in `docs/benchmarks-phase1.md`.
 
 **Where the database lives**
 
