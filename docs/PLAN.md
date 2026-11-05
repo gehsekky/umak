@@ -149,11 +149,11 @@ The library engine is the heart of the app. It never modifies music files unless
 
 **Scanner and watcher**
 
-- Walk folders and read tags with Lofty, tuning concurrency per storage device. Parallel reads can slow a hard drive, so benchmark rather than assume more threads help.
+- Walk folders and read tags with Lofty, tuning concurrency per storage device. Parallel reads can slow a hard drive, so benchmark rather than assume more threads help. On the hard drive holding the collection, 4 threads was fastest (12.8 ms per cold MP3, against 17.7 with 1 thread and 13.3 with 8).
 - Ignore playlist files (`.m3u`, `.m3u8`). Playlists are created and stored in the app.
 - Skip unchanged files by comparing modified time and size, so rescans are near-instant.
 - Run a file watcher so adds, moves and deletes appear automatically, with no manual rescan. Network shares can miss change notifications, so network roots also get a periodic rescan.
-- Detect moved files by a fingerprint of sampled audio data, which tag edits don't change and which never needs a full read of a large file. Track IDs, ratings, play counts and playlist entries survive a reorganization.
+- Detect moved files by a fingerprint of sampled audio data, which tag edits don't change and which never needs a full read of a large file. Track IDs, ratings, play counts and playlist entries survive a reorganization. The fingerprint hashes the audio length and the first 64 KiB of audio: that costs about 1 ms per file, while each extra sample adds a disk seek of about 7 ms. Across 21,387 real files, all 84 groups sharing a fingerprint held byte-identical audio.
 - Mark files that disappear as missing instead of deleting their rows, so playlist entries survive until the file returns.
 
 **Tag model**
@@ -528,6 +528,7 @@ Build in six phases, each ending in something usable. The 30k-track test library
 
 **Open questions**
 
-- [ ] Which tag versions and M4A codecs do the files use? By file extension the collection is MP3, FLAC and M4A, with no WMA.
+- [x] Which M4A codecs do the files use? The 274 M4A files in the library roots are 203 AAC and 71 ALAC. HE-AAC is not yet ruled out among the AAC files; check when the player is built.
+- [ ] Should a single artist tag be split on `/`? 411 tracks use it for several artists (`2Pac/Danny Boy`), but it also appears in names (`AC/DC`), so tags are not split for now. These become separate artist rows such as `Dr. Dre/Eminem`.
 - [ ] When the server is added, should it run inside the desktop app, headless on the NAS, or both?
 - [ ] Is bit-perfect or exclusive-mode output a requirement from the start?

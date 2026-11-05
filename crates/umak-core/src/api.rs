@@ -6,6 +6,7 @@
 //! implementation. To add a command, implement `Command` and list it in `commands!`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
@@ -15,6 +16,8 @@ use serde_json::Value;
 use ts_rs::TS;
 
 use crate::db::{Database, DbError, new_public_id};
+use crate::jobs::{JobInfo, JobKind, JobOutcome, JobRunner};
+use crate::scan::{self, ScanError, ScanOptions};
 use crate::{AppInfo, app_info};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -54,10 +57,33 @@ impl From<rusqlite::Error> for ApiError {
     }
 }
 
+impl From<ScanError> for ApiError {
+    fn from(error: ScanError) -> Self {
+        let code = match error {
+            ScanError::UnknownRoot => ErrorCode::InvalidArgs,
+            _ => ErrorCode::Internal,
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum CoreEvent {
     LibraryRootsChanged,
+    /// Tracks, albums or artists changed, so views showing them should reload.
+    LibraryChanged,
+    JobProgress {
+        id: String,
+        kind: JobKind,
+        done: u64,
+        total: u64,
+    },
+    /// The job's final state and result are available from `jobs.list`.
+    JobFinished {
+        id: String,
+        kind: JobKind,
+    },
 }
 
 /// Delivers events to whichever transport is attached.
@@ -67,13 +93,17 @@ pub trait EventSink: Send + Sync {
 
 /// The state every command runs against.
 pub struct Core {
-    db: Database,
-    events: Box<dyn EventSink>,
+    db: Arc<Database>,
+    events: Arc<dyn EventSink>,
+    jobs: JobRunner,
 }
 
 impl Core {
-    pub fn new(db: Database, events: Box<dyn EventSink>) -> Self {
-        Self { db, events }
+    pub fn new(db: Database, events: Box<dyn EventSink>) -> Result<Self, DbError> {
+        let db = Arc::new(db);
+        let events: Arc<dyn EventSink> = Arc::from(events);
+        let jobs = JobRunner::new(Arc::clone(&db), Arc::clone(&events))?;
+        Ok(Self { db, events, jobs })
     }
 }
 
@@ -113,7 +143,9 @@ macro_rules! commands {
     };
 }
 
-commands![GetAppInfo, ListRoots, AddRoot];
+commands![
+    GetAppInfo, ListRoots, AddRoot, StartScan, ListJobs, CancelJob
+];
 
 #[derive(Debug, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -172,42 +204,47 @@ impl Command for AddRoot {
     type Output = LibraryRoot;
 
     fn run(self, core: &Core) -> Result<LibraryRoot, ApiError> {
-        let path = resolve_root_path(&self.path)?;
-        let path_text = path
-            .to_str()
-            .ok_or_else(|| {
-                ApiError::new(
-                    ErrorCode::InvalidArgs,
-                    "the folder path is not valid Unicode",
-                )
-            })?
-            .to_owned();
-        let name = self
-            .name
-            .or_else(|| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
-            .unwrap_or_else(|| path_text.clone());
-        let root = LibraryRoot {
-            id: new_public_id(),
-            name,
-            path: path_text,
-            added_at: now_ms(),
-        };
-        core.db.write(|conn| {
-            let tx = conn.transaction()?;
-            ensure_no_overlap(&tx, &path)?;
-            tx.execute(
-                "INSERT INTO library_roots (public_id, name, path, added_at) VALUES (?1, ?2, ?3, ?4)",
-                params![root.id, root.name, root.path, root.added_at],
-            )?;
-            tx.commit()?;
-            Ok::<_, ApiError>(())
-        })?;
+        let root = add_root(&core.db, &self.path, self.name)?;
         core.events.emit(&CoreEvent::LibraryRootsChanged);
         Ok(root)
     }
+}
+
+/// Registers a library folder. It must exist and must not overlap another root.
+pub fn add_root(db: &Database, path: &str, name: Option<String>) -> Result<LibraryRoot, ApiError> {
+    let path = resolve_root_path(path)?;
+    let path_text = path
+        .to_str()
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::InvalidArgs,
+                "the folder path is not valid Unicode",
+            )
+        })?
+        .to_owned();
+    let name = name
+        .or_else(|| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| path_text.clone());
+    let root = LibraryRoot {
+        id: new_public_id(),
+        name,
+        path: path_text,
+        added_at: now_ms(),
+    };
+    db.write(|conn| {
+        let tx = conn.transaction()?;
+        ensure_no_overlap(&tx, &path)?;
+        tx.execute(
+            "INSERT INTO library_roots (public_id, name, path, added_at) VALUES (?1, ?2, ?3, ?4)",
+            params![root.id, root.name, root.path, root.added_at],
+        )?;
+        tx.commit()?;
+        Ok::<_, ApiError>(())
+    })?;
+    Ok(root)
 }
 
 fn resolve_root_path(path: &str) -> Result<PathBuf, ApiError> {
@@ -250,6 +287,95 @@ fn select_roots(conn: &Connection) -> Result<Vec<LibraryRoot>, rusqlite::Error> 
         })
     })?
     .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct JobRef {
+    pub id: String,
+}
+
+/// Starts scanning in the background and returns at once. Progress arrives as events.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct StartScan {
+    /// The roots to scan, or every root when null.
+    pub roots: Option<Vec<String>>,
+}
+
+impl Command for StartScan {
+    const NAME: &'static str = "library.scan.start";
+    type Output = JobRef;
+
+    fn run(self, core: &Core) -> Result<JobRef, ApiError> {
+        let db = Arc::clone(&core.db);
+        let events = Arc::clone(&core.events);
+        let roots = self.roots;
+        let id = core.jobs.start(JobKind::Scan, move |context| {
+            let mut report_progress = |progress: scan::ScanProgress| {
+                context.progress(progress.done, progress.total);
+            };
+            let report = scan::scan_library(
+                &db,
+                roots.as_deref(),
+                ScanOptions::default(),
+                context.cancel_flag(),
+                &mut report_progress,
+            )
+            .map_err(|error| error.to_string())?;
+            if report.changed() {
+                events.emit(&CoreEvent::LibraryChanged);
+            }
+            Ok(JobOutcome {
+                canceled: report.canceled,
+                scan: Some(report),
+            })
+        })?;
+        Ok(JobRef { id })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct JobList {
+    pub jobs: Vec<JobInfo>,
+}
+
+/// The most recent jobs, newest first.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListJobs {}
+
+impl Command for ListJobs {
+    const NAME: &'static str = "jobs.list";
+    type Output = JobList;
+
+    fn run(self, core: &Core) -> Result<JobList, ApiError> {
+        Ok(JobList {
+            jobs: core.jobs.list()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct CancelResult {
+    /// False when the job was not running, for example because it had just finished.
+    pub requested: bool,
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct CancelJob {
+    pub id: String,
+}
+
+impl Command for CancelJob {
+    const NAME: &'static str = "jobs.cancel";
+    type Output = CancelResult;
+
+    fn run(self, core: &Core) -> Result<CancelResult, ApiError> {
+        Ok(CancelResult {
+            requested: core.jobs.cancel(&self.id),
+        })
+    }
 }
 
 fn now_ms() -> i64 {
@@ -333,7 +459,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open(dir.path().join("umak.db")).unwrap();
         let events = RecordingSink::default();
-        let core = Core::new(db, Box::new(events.clone()));
+        let core = Core::new(db, Box::new(events.clone())).unwrap();
         Fixture { dir, core, events }
     }
 
@@ -475,6 +601,78 @@ mod tests {
         // A shared name prefix is not an overlap.
         fixture.add_root(&sibling).unwrap();
         assert_eq!(fixture.root_count(), 2);
+    }
+
+    #[test]
+    fn a_scan_started_by_command_runs_in_the_background_and_reports_its_result() {
+        let fixture = fixture();
+        let path = fixture.folder("Albums");
+        fs::write(Path::new(&path).join("not-audio.mp3"), b"text").unwrap();
+        fixture.add_root(&path).unwrap();
+
+        let job = dispatch(
+            &fixture.core,
+            "library.scan.start",
+            json!({ "roots": null }),
+        )
+        .unwrap();
+        let id = job["id"].as_str().unwrap().to_owned();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let finished = CoreEvent::JobFinished {
+            id: id.clone(),
+            kind: JobKind::Scan,
+        };
+        while !fixture.events.0.lock().unwrap().contains(&finished) {
+            assert!(std::time::Instant::now() < deadline, "the scan never ended");
+            std::thread::yield_now();
+        }
+
+        let list = dispatch(&fixture.core, "jobs.list", json!({})).unwrap();
+        let listed = &list["jobs"][0];
+        assert_eq!(listed["id"], id.as_str());
+        assert_eq!(listed["status"], "completed");
+        assert_eq!(listed["scan"]["added"], 1);
+        assert_eq!(listed["scan"]["tagErrors"], 1);
+        let events = fixture.events.0.lock().unwrap();
+        assert!(events.contains(&CoreEvent::LibraryChanged));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            CoreEvent::JobProgress {
+                done: 1,
+                total: 1,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn scanning_an_unknown_root_fails_the_job() {
+        let fixture = fixture();
+        let job = dispatch(
+            &fixture.core,
+            "library.scan.start",
+            json!({ "roots": ["no-such-root"] }),
+        )
+        .unwrap();
+        let finished = CoreEvent::JobFinished {
+            id: job["id"].as_str().unwrap().to_owned(),
+            kind: JobKind::Scan,
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !fixture.events.0.lock().unwrap().contains(&finished) {
+            assert!(std::time::Instant::now() < deadline, "the scan never ended");
+            std::thread::yield_now();
+        }
+        let list = dispatch(&fixture.core, "jobs.list", json!({})).unwrap();
+        assert_eq!(list["jobs"][0]["status"], "failed");
+    }
+
+    #[test]
+    fn canceling_an_unknown_job_reports_that_nothing_was_requested() {
+        let fixture = fixture();
+        let result = dispatch(&fixture.core, "jobs.cancel", json!({ "id": "none" })).unwrap();
+        assert_eq!(result["requested"], false);
     }
 
     #[test]

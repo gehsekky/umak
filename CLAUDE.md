@@ -39,7 +39,8 @@ docs/                 PLAN.md and architecture notes
 Run from the repository root:
 
 - `cargo test --workspace`: Rust tests.
-- `cargo run -p umak-scan`, `cargo run -p umak-play`: headless binaries.
+- `cargo run -p umak-scan -- <database> <folder>... [--threads N] [--samples N]`: scan folders into a database and print a report. Keep test databases outside the repository.
+- `cargo run -p umak-play`: the player binary.
 - `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio`.
 
 Run from `app/` (run `npm install` first):

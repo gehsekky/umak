@@ -15,6 +15,9 @@ uuid = { version = "1", features = ["v4"] }
 serde_json = "1"
 ts-rs = "12"
 dunce = "1"
+lofty = "0.25.5"
+unicode-normalization = "0.1.26"
+blake3 = { version = "1.8.7", features = ["pure"] }
 
 [dev-dependencies]
 tempfile = "3"

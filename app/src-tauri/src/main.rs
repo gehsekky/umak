@@ -31,7 +31,7 @@ fn call(core: State<'_, Core>, name: String, args: Value) -> Result<Value, ApiEr
 
 fn manage_core<R: Runtime>(app: &AppHandle<R>, database: &Path) -> Result<(), DbError> {
     let db = Database::open(database)?;
-    app.manage(Core::new(db, Box::new(TauriEvents(app.clone()))));
+    app.manage(Core::new(db, Box::new(TauriEvents(app.clone())))?);
     Ok(())
 }
 

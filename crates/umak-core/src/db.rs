@@ -11,10 +11,14 @@ use std::time::Duration;
 use rusqlite::{Connection, OpenFlags};
 
 /// Migrations in order. A database's `user_version` counts how many have run.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_initial.sql"),
+    include_str!("../migrations/0002_scanner.sql"),
+];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_IDLE_READERS: usize = 4;
+const STATEMENT_CACHE: usize = 64;
 
 pub const DEFAULT_USER_ID: i64 = 1;
 pub const VARIOUS_ARTISTS_PUBLIC_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -99,6 +103,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn configure_writer(conn: &Connection) -> Result<(), DbError> {
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
     let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
     if !mode.eq_ignore_ascii_case("wal") {
         return Err(DbError::WalUnavailable(mode));
