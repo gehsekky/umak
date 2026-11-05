@@ -1,16 +1,30 @@
 // Generated from the commands! list in umak-core. Do not edit.
+import type { AddPlaylistTracks } from "./AddPlaylistTracks";
 import type { AddRoot } from "./AddRoot";
 import type { AppInfo } from "./AppInfo";
 import type { CancelJob } from "./CancelJob";
 import type { CancelResult } from "./CancelResult";
+import type { CreatePlaylist } from "./CreatePlaylist";
+import type { DeletePlaylist } from "./DeletePlaylist";
+import type { Deleted } from "./Deleted";
 import type { GetAppInfo } from "./GetAppInfo";
+import type { GetPlaylistItems } from "./GetPlaylistItems";
+import type { GetTrackPage } from "./GetTrackPage";
 import type { JobList } from "./JobList";
 import type { JobRef } from "./JobRef";
 import type { LibraryRoot } from "./LibraryRoot";
 import type { ListJobs } from "./ListJobs";
+import type { ListPlaylists } from "./ListPlaylists";
 import type { ListRoots } from "./ListRoots";
+import type { MovePlaylistItems } from "./MovePlaylistItems";
+import type { Playlist } from "./Playlist";
+import type { PlaylistList } from "./PlaylistList";
+import type { PlaylistPage } from "./PlaylistPage";
+import type { RemovePlaylistItems } from "./RemovePlaylistItems";
+import type { RenamePlaylist } from "./RenamePlaylist";
 import type { RootList } from "./RootList";
 import type { StartScan } from "./StartScan";
+import type { TrackPage } from "./TrackPage";
 
 export type CommandMap = {
   "app.info": { args: GetAppInfo; output: AppInfo };
@@ -19,4 +33,13 @@ export type CommandMap = {
   "library.scan.start": { args: StartScan; output: JobRef };
   "jobs.list": { args: ListJobs; output: JobList };
   "jobs.cancel": { args: CancelJob; output: CancelResult };
+  "library.tracks.page": { args: GetTrackPage; output: TrackPage };
+  "playlists.list": { args: ListPlaylists; output: PlaylistList };
+  "playlists.create": { args: CreatePlaylist; output: Playlist };
+  "playlists.rename": { args: RenamePlaylist; output: Playlist };
+  "playlists.delete": { args: DeletePlaylist; output: Deleted };
+  "playlists.items": { args: GetPlaylistItems; output: PlaylistPage };
+  "playlists.addTracks": { args: AddPlaylistTracks; output: Playlist };
+  "playlists.removeItems": { args: RemovePlaylistItems; output: Playlist };
+  "playlists.moveItems": { args: MovePlaylistItems; output: Playlist };
 };

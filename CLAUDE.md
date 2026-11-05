@@ -47,9 +47,11 @@ Run from the repository root:
 Run from `app/` (run `npm install` first):
 
 - `npm run check`: type-check the UI.
+- `npm test`: UI logic tests.
 - `npx tauri dev`: run the app with hot reload.
 - `npx tauri build --no-bundle`: build the release executable at `target/release/umak-app.exe`.
 - Set `VITE_UMAK_THEME=test` when building to try the test theme.
+- Set `UMAK_DATA_DIR` to run the app against another data folder, leaving the real database alone.
 
 TypeScript stays on version 6 until `svelte-check` supports version 7.
 

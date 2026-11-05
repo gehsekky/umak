@@ -2,12 +2,26 @@
   "name": "Default",
   "tokens": {
     "color-bg": "#14161a",
+    "color-surface": "#1b1e23",
+    "color-surface-raised": "#262a31",
+    "color-border": "#30353d",
     "color-text": "#e8eaed",
     "color-text-muted": "#9aa0a8",
     "color-accent": "#6ea8fe",
+    "color-on-accent": "#0b1320",
+    "color-hover": "#22262c",
+    "color-selected": "#233650",
+    "color-danger": "#f28b82",
     "font-body": "system-ui, sans-serif",
+    "font-size-small": "12px",
     "font-size-body": "14px",
+    "font-size-title": "20px",
+    "space-xs": "4px",
     "space-sm": "8px",
-    "space-lg": "24px"
+    "space-md": "16px",
+    "space-lg": "24px",
+    "radius": "4px",
+    "size-row": "30px",
+    "size-sidebar": "230px"
   }
 }

@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -10,6 +10,8 @@ use umak_core::api::{self, ApiError, Core, CoreEvent, EventSink};
 use umak_core::db::{Database, DbError};
 
 const EVENT_CHANNEL: &str = "umak:event";
+/// Points the app at another data folder, so test runs leave the real database alone.
+const DATA_DIR_VARIABLE: &str = "UMAK_DATA_DIR";
 
 /// Forwards core events to the webview.
 struct TauriEvents<R: Runtime>(AppHandle<R>);
@@ -37,8 +39,12 @@ fn manage_core<R: Runtime>(app: &AppHandle<R>, database: &Path) -> Result<(), Db
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
+            let data_dir = match std::env::var_os(DATA_DIR_VARIABLE) {
+                Some(folder) => PathBuf::from(folder),
+                None => app.path().app_data_dir()?,
+            };
             fs::create_dir_all(&data_dir)?;
             manage_core(app.handle(), &data_dir.join("umak.db"))?;
             Ok(())

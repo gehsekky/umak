@@ -3,13 +3,27 @@ import testTheme from "./themes/test.json";
 
 export type TokenName =
   | "color-bg"
+  | "color-surface"
+  | "color-surface-raised"
+  | "color-border"
   | "color-text"
   | "color-text-muted"
   | "color-accent"
+  | "color-on-accent"
+  | "color-hover"
+  | "color-selected"
+  | "color-danger"
   | "font-body"
+  | "font-size-small"
   | "font-size-body"
+  | "font-size-title"
+  | "space-xs"
   | "space-sm"
-  | "space-lg";
+  | "space-md"
+  | "space-lg"
+  | "radius"
+  | "size-row"
+  | "size-sidebar";
 
 export type Theme = {
   name: string;

@@ -5,6 +5,8 @@
 pub mod api;
 pub mod db;
 pub mod jobs;
+pub mod library;
+pub mod playlists;
 pub mod scan;
 pub mod stats;
 

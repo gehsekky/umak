@@ -5,6 +5,10 @@ body,
   margin: 0;
 }
 
+* {
+  scrollbar-color: var(--color-border) transparent;
+}
+
 body {
   background: var(--color-bg);
   color: var(--color-text);

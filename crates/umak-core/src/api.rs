@@ -17,6 +17,8 @@ use ts_rs::TS;
 
 use crate::db::{Database, DbError, new_public_id};
 use crate::jobs::{JobInfo, JobKind, JobOutcome, JobRunner};
+use crate::library::{self, TrackPage, TrackSort};
+use crate::playlists::{self, Playlist, PlaylistPage};
 use crate::scan::{self, ScanError, ScanOptions};
 use crate::{AppInfo, app_info};
 
@@ -25,6 +27,7 @@ use crate::{AppInfo, app_info};
 pub enum ErrorCode {
     UnknownCommand,
     InvalidArgs,
+    NotFound,
     Conflict,
     Internal,
 }
@@ -37,7 +40,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -73,6 +76,8 @@ pub enum CoreEvent {
     LibraryRootsChanged,
     /// Tracks, albums or artists changed, so views showing them should reload.
     LibraryChanged,
+    /// A playlist or its contents changed.
+    PlaylistsChanged,
     JobProgress {
         id: String,
         kind: JobKind,
@@ -144,7 +149,21 @@ macro_rules! commands {
 }
 
 commands![
-    GetAppInfo, ListRoots, AddRoot, StartScan, ListJobs, CancelJob
+    GetAppInfo,
+    ListRoots,
+    AddRoot,
+    StartScan,
+    ListJobs,
+    CancelJob,
+    GetTrackPage,
+    ListPlaylists,
+    CreatePlaylist,
+    RenamePlaylist,
+    DeletePlaylist,
+    GetPlaylistItems,
+    AddPlaylistTracks,
+    RemovePlaylistItems,
+    MovePlaylistItems,
 ];
 
 #[derive(Debug, Deserialize, TS)]
@@ -167,6 +186,8 @@ pub struct LibraryRoot {
     pub name: String,
     pub path: String,
     pub added_at: i64,
+    pub track_count: u32,
+    pub missing_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -233,6 +254,8 @@ pub fn add_root(db: &Database, path: &str, name: Option<String>) -> Result<Libra
         name,
         path: path_text,
         added_at: now_ms(),
+        track_count: 0,
+        missing_count: 0,
     };
     db.write(|conn| {
         let tx = conn.transaction()?;
@@ -276,7 +299,11 @@ fn ensure_no_overlap(conn: &Connection, path: &Path) -> Result<(), ApiError> {
 
 fn select_roots(conn: &Connection) -> Result<Vec<LibraryRoot>, rusqlite::Error> {
     conn.prepare_cached(
-        "SELECT public_id, name, path, added_at FROM library_roots ORDER BY name, id",
+        "SELECT r.public_id, r.name, r.path, r.added_at,
+                (SELECT count(*) FROM tracks t WHERE t.root_id = r.id),
+                (SELECT count(*) FROM tracks t
+                 WHERE t.root_id = r.id AND t.missing_since IS NOT NULL)
+         FROM library_roots r ORDER BY r.name, r.id",
     )?
     .query_map([], |row| {
         Ok(LibraryRoot {
@@ -284,9 +311,207 @@ fn select_roots(conn: &Connection) -> Result<Vec<LibraryRoot>, rusqlite::Error> 
             name: row.get(1)?,
             path: row.get(2)?,
             added_at: row.get(3)?,
+            track_count: row.get(4)?,
+            missing_count: row.get(5)?,
         })
     })?
     .collect()
+}
+
+/// A page of the library, in the given order, optionally limited to search matches.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetTrackPage {
+    pub query: Option<String>,
+    pub sort: TrackSort,
+    pub descending: bool,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Command for GetTrackPage {
+    const NAME: &'static str = "library.tracks.page";
+    type Output = TrackPage;
+
+    fn run(self, core: &Core) -> Result<TrackPage, ApiError> {
+        core.db.read(|conn| {
+            Ok(library::track_page(
+                conn,
+                self.query.as_deref(),
+                self.sort,
+                self.descending,
+                self.offset,
+                self.limit,
+            )?)
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct PlaylistList {
+    pub playlists: Vec<Playlist>,
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListPlaylists {}
+
+impl Command for ListPlaylists {
+    const NAME: &'static str = "playlists.list";
+    type Output = PlaylistList;
+
+    fn run(self, core: &Core) -> Result<PlaylistList, ApiError> {
+        core.db.read(|conn| {
+            Ok(PlaylistList {
+                playlists: playlists::list(conn)?,
+            })
+        })
+    }
+}
+
+impl Core {
+    /// Runs a playlist change in one transaction and announces it.
+    fn change_playlists<T>(
+        &self,
+        work: impl FnOnce(&Connection, i64) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
+        let result = self.db.write(|conn| {
+            let tx = conn.transaction()?;
+            let result = work(&tx, now_ms())?;
+            tx.commit()?;
+            Ok::<_, ApiError>(result)
+        })?;
+        self.events.emit(&CoreEvent::PlaylistsChanged);
+        Ok(result)
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct CreatePlaylist {
+    pub name: String,
+}
+
+impl Command for CreatePlaylist {
+    const NAME: &'static str = "playlists.create";
+    type Output = Playlist;
+
+    fn run(self, core: &Core) -> Result<Playlist, ApiError> {
+        core.change_playlists(|conn, now| playlists::create(conn, &self.name, now))
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RenamePlaylist {
+    pub id: String,
+    pub name: String,
+}
+
+impl Command for RenamePlaylist {
+    const NAME: &'static str = "playlists.rename";
+    type Output = Playlist;
+
+    fn run(self, core: &Core) -> Result<Playlist, ApiError> {
+        core.change_playlists(|conn, now| playlists::rename(conn, &self.id, &self.name, now))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct Deleted {
+    pub id: String,
+}
+
+/// Deletes the playlist. Its tracks stay in the library.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DeletePlaylist {
+    pub id: String,
+}
+
+impl Command for DeletePlaylist {
+    const NAME: &'static str = "playlists.delete";
+    type Output = Deleted;
+
+    fn run(self, core: &Core) -> Result<Deleted, ApiError> {
+        core.change_playlists(|conn, _| playlists::delete(conn, &self.id))?;
+        Ok(Deleted { id: self.id })
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetPlaylistItems {
+    pub id: String,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Command for GetPlaylistItems {
+    const NAME: &'static str = "playlists.items";
+    type Output = PlaylistPage;
+
+    fn run(self, core: &Core) -> Result<PlaylistPage, ApiError> {
+        core.db
+            .read(|conn| playlists::items(conn, &self.id, self.offset, self.limit))
+    }
+}
+
+/// Appends tracks to the end of a playlist.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AddPlaylistTracks {
+    pub id: String,
+    pub track_ids: Vec<String>,
+}
+
+impl Command for AddPlaylistTracks {
+    const NAME: &'static str = "playlists.addTracks";
+    type Output = Playlist;
+
+    fn run(self, core: &Core) -> Result<Playlist, ApiError> {
+        core.change_playlists(|conn, now| {
+            playlists::add_tracks(conn, &self.id, &self.track_ids, now)
+        })
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RemovePlaylistItems {
+    pub id: String,
+    pub positions: Vec<i64>,
+}
+
+impl Command for RemovePlaylistItems {
+    const NAME: &'static str = "playlists.removeItems";
+    type Output = Playlist;
+
+    fn run(self, core: &Core) -> Result<Playlist, ApiError> {
+        core.change_playlists(|conn, now| {
+            playlists::remove_items(conn, &self.id, &self.positions, now)
+        })
+    }
+}
+
+/// Moves entries together before another entry, or to the end when `before` is null.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MovePlaylistItems {
+    pub id: String,
+    pub positions: Vec<i64>,
+    pub before: Option<i64>,
+}
+
+impl Command for MovePlaylistItems {
+    const NAME: &'static str = "playlists.moveItems";
+    type Output = Playlist;
+
+    fn run(self, core: &Core) -> Result<Playlist, ApiError> {
+        core.change_playlists(|conn, now| {
+            playlists::move_items(conn, &self.id, &self.positions, self.before, now)
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -313,6 +538,11 @@ impl Command for StartScan {
         let id = core.jobs.start(JobKind::Scan, move |context| {
             let mut report_progress = |progress: scan::ScanProgress| {
                 context.progress(progress.done, progress.total);
+                // Each progress update follows a committed batch, so views can show
+                // the new tracks while a long first import runs.
+                if progress.done > 0 {
+                    events.emit(&CoreEvent::LibraryChanged);
+                }
             };
             let report = scan::scan_library(
                 &db,
@@ -666,6 +896,63 @@ mod tests {
         }
         let list = dispatch(&fixture.core, "jobs.list", json!({})).unwrap();
         assert_eq!(list["jobs"][0]["status"], "failed");
+    }
+
+    #[test]
+    fn a_playlist_change_commits_all_or_nothing_and_announces_itself() {
+        let fixture = fixture();
+        let made = dispatch(&fixture.core, "playlists.create", json!({ "name": "Mix" })).unwrap();
+        assert_eq!(made["name"], "Mix");
+        assert_eq!(made["trackCount"], 0);
+        assert_eq!(
+            *fixture.events.0.lock().unwrap(),
+            [CoreEvent::PlaylistsChanged]
+        );
+
+        let id = made["id"].as_str().unwrap();
+        let error = dispatch(
+            &fixture.core,
+            "playlists.addTracks",
+            json!({ "id": id, "trackIds": ["no-such-track"] }),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert_eq!(fixture.events.0.lock().unwrap().len(), 1);
+
+        let deleted = dispatch(&fixture.core, "playlists.delete", json!({ "id": id })).unwrap();
+        assert_eq!(deleted["id"], id);
+        let list = dispatch(&fixture.core, "playlists.list", json!({})).unwrap();
+        assert_eq!(list["playlists"], json!([]));
+    }
+
+    #[test]
+    fn track_pages_reject_an_unknown_sort() {
+        let fixture = fixture();
+        let args = |sort: &str| json!({ "query": null, "sort": sort, "descending": false, "offset": 0, "limit": 10 });
+        let page = dispatch(&fixture.core, "library.tracks.page", args("title")).unwrap();
+        assert_eq!(page["total"], 0);
+        let error = dispatch(&fixture.core, "library.tracks.page", args("mood")).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgs);
+    }
+
+    #[test]
+    fn listed_roots_report_their_track_counts() {
+        let fixture = fixture();
+        let path = fixture.folder("Albums");
+        fs::write(Path::new(&path).join("a.mp3"), b"text").unwrap();
+        fixture.add_root(&path).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        scan::scan_library(
+            &fixture.core.db,
+            None,
+            ScanOptions::default(),
+            &cancel,
+            &mut |_| {},
+        )
+        .unwrap();
+        let list = dispatch(&fixture.core, "library.roots.list", json!({})).unwrap();
+        assert_eq!(list["roots"][0]["trackCount"], 1);
+        assert_eq!(list["roots"][0]["missingCount"], 0);
     }
 
     #[test]

@@ -2,12 +2,26 @@
   "name": "Test",
   "tokens": {
     "color-bg": "#fff4d6",
+    "color-surface": "#ffe9b0",
+    "color-surface-raised": "#ffdc85",
+    "color-border": "#c79a3a",
     "color-text": "#3b1f00",
     "color-text-muted": "#7a4b12",
     "color-accent": "#c2185b",
+    "color-on-accent": "#fff4d6",
+    "color-hover": "#ffe29a",
+    "color-selected": "#f6b6cf",
+    "color-danger": "#a30000",
     "font-body": "Georgia, serif",
+    "font-size-small": "14px",
     "font-size-body": "18px",
-    "space-sm": "16px",
-    "space-lg": "64px"
+    "font-size-title": "30px",
+    "space-xs": "6px",
+    "space-sm": "12px",
+    "space-md": "24px",
+    "space-lg": "40px",
+    "radius": "14px",
+    "size-row": "46px",
+    "size-sidebar": "320px"
   }
 }
