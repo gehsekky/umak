@@ -164,6 +164,20 @@ The library engine is the heart of the app. It never modifies music files unless
 - Preserve unknown and custom tags in a raw key-value store, so nothing is lost on write.
 - Embedded art is extracted once to a thumbnail cache on disk.
 
+**Album grouping and compilations**
+
+The scanner assigns each track to an album using the first rule that applies. Grouping only affects the database and never writes to music files.
+
+1. MusicBrainz album ID, when present.
+2. Album artist tag, title and folder.
+3. Compilation flag with no album artist: album artist becomes Various Artists.
+4. No usable tags: tracks with the same album title in the same folder are judged together. An artist on at least half the tracks becomes the album artist; otherwise the album is an inferred compilation under Various Artists.
+
+- Folders named like `CD1` or `Disc 2` count as their parent folder when grouping.
+- Spelling variants such as "VA" and "Various" map to the reserved Various Artists row.
+- Each track keeps its own artists, so compilations appear once under Various Artists and in an "Appears on" section on each artist's page.
+- The 50% threshold is a starting guess. `umak-scan` reports how many albums took each rule and lists inferred compilations, so it can be tuned against real files.
+
 **Tag editing**
 
 - Batch edit across any selection, with a preview of every change before it is written.
@@ -184,17 +198,20 @@ SQLite in WAL mode, accessed through rusqlite, with FTS5 for search. At 30,000 t
 
 | Table | Holds | Key notes |
 | --- | --- | --- |
+| library_roots | Music folders | Name and path on this machine |
 | users | Accounts | A single default user until the server adds more |
-| tracks | One row per file | Stable ID, root-relative path, size, mtime, duration, codec, bitrate, fingerprint, missing flag |
-| track_user_data | Per-user track data | User id, track id, rating, play count |
-| albums | Album entities | Album artist, year, compilation flag, art reference |
-| artists | Artist entities | Name, sort name, MusicBrainz ID |
-| track_artists, track_genres | Join tables | Multi-value tags, with role (artist, composer) |
+| tracks | One row per file | Stable ID, root-relative path, size, mtime, duration, codec, bitrate, fingerprint, missing flag, plus sort and display copies so browsing needs no joins |
+| track_user_data | Per-user track data | User id, track id, rating (0 to 10, shown as half-stars), play count |
+| albums | Album entities | Grouping key, album artist, year, compilation source (none, tagged or inferred), art reference |
+| artists | Artist entities | Name, sort name, MusicBrainz ID; a reserved row for Various Artists |
+| genres | Genre names | Referenced by track_genres |
+| track_artists, album_artists, track_genres | Join tables | Multi-value tags, with role (artist, composer) on track_artists |
 | raw_tags | Unmapped tags | Preserves custom and unknown fields per track |
 | playlists, playlist_items | Saved playlists and the player playlist | Per-user, ordered items; smart playlists store a rule; a reserved row per user holds the player playlist and position |
 | play_history | Listens | User id and timestamp per play, feeds scrobbling and smart rules |
 | tracks_fts | FTS5 index | Title, artist, album, genre for instant search |
 | jobs | Conversion and scan jobs | Status, progress, errors |
+| settings | App settings | Key and JSON value, with typed access in Rust |
 
 **Performance rules**
 
@@ -468,7 +485,7 @@ Umak is the working name. It is the Yale-style romanization of the Korean word f
 Phase 1 builds the basic library features and a lightweight player, plus the seams listed under Extension points.
 
 1. Cargo workspace with `umak-core`, `umak-audio`, `umak-play` and `umak-scan`, plus the Tauri and Svelte shell in `app/`. `umak-convert` and `umak-server` wait for their phases.
-2. SQLite schema with migrations: tracks, albums, artists, join tables, raw tags, the FTS5 search index, per-user track data, playlists, jobs and users (a single default user).
+2. SQLite schema with migrations, covering every table under Database design.
 3. A command layer with typed commands and events, independent of transport, with TypeScript types generated from Rust.
 4. Library import: choose folders, then scan with Lofty, tuned concurrency, sampled fingerprints, missing-file handling and a skip for unchanged files by modified time and size. Check early whether the fingerprint's extra disk seeks dominate first-import time.
 5. `umak-scan`, a headless binary that scans a folder and prints statistics, proving the core runs without the UI.

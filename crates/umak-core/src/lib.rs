@@ -2,6 +2,8 @@
 //!
 //! This crate must never depend on Tauri or UI code.
 
+pub mod db;
+
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
