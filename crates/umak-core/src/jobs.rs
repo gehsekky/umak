@@ -16,6 +16,7 @@ use ts_rs::TS;
 use crate::api::{ApiError, CoreEvent, ErrorCode, EventSink};
 use crate::db::{Database, DbError, new_public_id};
 use crate::scan::ScanReport;
+use crate::transfer::ImportReport;
 
 const LISTED_JOBS: i64 = 50;
 
@@ -23,12 +24,14 @@ const LISTED_JOBS: i64 = 50;
 #[serde(rename_all = "camelCase")]
 pub enum JobKind {
     Scan,
+    Import,
 }
 
 impl JobKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::Scan => "scan",
+            Self::Import => "import",
         }
     }
 }
@@ -43,6 +46,7 @@ pub struct JobInfo {
     pub total: Option<u64>,
     pub error: Option<String>,
     pub scan: Option<ScanReport>,
+    pub import: Option<ImportReport>,
     pub created_at: i64,
     pub finished_at: Option<i64>,
 }
@@ -51,6 +55,7 @@ pub struct JobInfo {
 pub struct JobOutcome {
     pub canceled: bool,
     pub scan: Option<ScanReport>,
+    pub import: Option<ImportReport>,
 }
 
 /// A running job's view of the runner.
@@ -132,10 +137,11 @@ impl JobRunner {
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
-            if running.values().any(|job| job.kind == kind) {
+            // Every kind writes to the library, so only one runs at a time.
+            if let Some(job) = running.values().next() {
                 return Err(ApiError {
                     code: ErrorCode::Conflict,
-                    message: format!("a {} job is already running", kind.as_str()),
+                    message: format!("a {} job is already running", job.kind.as_str()),
                 });
             }
             self.db.write(|conn| insert_job(conn, &id, kind))?;
@@ -198,14 +204,23 @@ impl JobRunner {
             )?;
             let rows = statement.query_map([LISTED_JOBS], |row| {
                 let payload: Option<String> = row.get(6)?;
+                let kind: String = row.get(1)?;
+                let is_import = kind == JobKind::Import.as_str();
                 Ok(JobInfo {
                     id: row.get(0)?,
-                    kind: row.get(1)?,
+                    kind,
                     status: row.get(2)?,
                     done: row.get::<_, i64>(3)? as u64,
                     total: row.get::<_, Option<i64>>(4)?.map(|total| total as u64),
                     error: row.get(5)?,
-                    scan: payload.and_then(|text| serde_json::from_str(&text).ok()),
+                    scan: payload
+                        .as_deref()
+                        .filter(|_| !is_import)
+                        .and_then(|text| serde_json::from_str(text).ok()),
+                    import: payload
+                        .as_deref()
+                        .filter(|_| is_import)
+                        .and_then(|text| serde_json::from_str(text).ok()),
                     created_at: row.get(7)?,
                     finished_at: row.get(8)?,
                 })
@@ -238,10 +253,11 @@ fn finish_job(
                 "completed"
             },
             None,
-            outcome
-                .scan
-                .as_ref()
-                .and_then(|report| serde_json::to_string(report).ok()),
+            match (&outcome.scan, &outcome.import) {
+                (_, Some(report)) => serde_json::to_string(report).ok(),
+                (Some(report), None) => serde_json::to_string(report).ok(),
+                (None, None) => None,
+            },
         ),
         Err(message) => ("failed", Some(message.as_str()), None),
     };
@@ -292,6 +308,7 @@ mod tests {
         Ok(JobOutcome {
             canceled: false,
             scan: None,
+            import: None,
         })
     }
 
@@ -353,6 +370,7 @@ mod tests {
                 Ok(JobOutcome {
                     canceled: true,
                     scan: None,
+                    import: None,
                 })
             })
             .unwrap();

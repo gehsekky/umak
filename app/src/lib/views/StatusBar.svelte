@@ -20,7 +20,8 @@
 <div class="bar" role="status">
   {#if app.scan}
     <span>
-      Scanning: {app.scan.done.toLocaleString()} of {app.scan.total.toLocaleString()} files
+      {app.scan.kind === "import" ? "Importing" : "Scanning"}:
+      {app.scan.done.toLocaleString()} of {app.scan.total.toLocaleString()} files
     </span>
     <span class="meter" aria-hidden="true"><span class="fill" style:width="{percent}%"></span></span>
     <button onclick={() => runAction("library.cancelScan")}>

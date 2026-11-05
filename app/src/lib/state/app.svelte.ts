@@ -2,15 +2,19 @@
 
 import { call, onCoreEvent } from "../api/client";
 import type { CoreEvent } from "../api/generated/CoreEvent";
+import type { ImportPreview } from "../api/generated/ImportPreview";
+import type { ImportReport } from "../api/generated/ImportReport";
 import type { LibraryRoot } from "../api/generated/LibraryRoot";
 import type { Playlist } from "../api/generated/Playlist";
 
 export type View =
   | { kind: "library" }
   | { kind: "folders" }
+  | { kind: "import" }
   | { kind: "playlist"; id: string };
 
-export type ScanState = { id: string; done: number; total: number };
+/** A background job reading the library: a scan, or the scan inside an import. */
+export type ScanState = { id: string; kind: string; done: number; total: number };
 
 class AppState {
   view = $state<View>({ kind: "library" });
@@ -19,6 +23,8 @@ class AppState {
   scan = $state<ScanState | null>(null);
   notice = $state<{ text: string; error: boolean } | null>(null);
   creatingPlaylist = $state(false);
+  importPreview = $state.raw<ImportPreview | null>(null);
+  importReport = $state.raw<ImportReport | null>(null);
   /** Increases when the search box should take focus. */
   searchFocusRequests = $state(0);
   /** Increase when their contents change, so list views know to reload. */
@@ -70,6 +76,20 @@ class AppState {
     }
   }
 
+  private async finishImport(id: string): Promise<void> {
+    this.scan = null;
+    await Promise.all([this.loadRoots(), this.loadPlaylists()]);
+    this.libraryVersion++;
+    this.playlistsVersion++;
+    const job = (await call("jobs.list", {})).jobs.find((candidate) => candidate.id === id);
+    if (job?.status === "failed") {
+      this.fail(`The import failed: ${job.error ?? "unknown error"}`);
+    } else if (job?.import) {
+      this.importReport = job.import;
+      this.notify(job.status === "canceled" ? "Import canceled" : "Import finished");
+    }
+  }
+
   private handle(event: CoreEvent): void {
     switch (event.type) {
       case "libraryRootsChanged":
@@ -84,12 +104,11 @@ class AppState {
         void this.loadPlaylists();
         break;
       case "jobProgress":
-        if (event.kind === "scan") {
-          this.scan = { id: event.id, done: event.done, total: event.total };
-        }
+        this.scan = { id: event.id, kind: event.kind, done: event.done, total: event.total };
         break;
       case "jobFinished":
         if (event.kind === "scan") void this.finishScan(event.id);
+        else void this.finishImport(event.id);
         break;
     }
   }
@@ -101,7 +120,12 @@ class AppState {
     // A scan may already be running, for example after the window reloads.
     const running = (await call("jobs.list", {})).jobs.find((job) => job.status === "running");
     if (running) {
-      this.scan = { id: running.id, done: running.done, total: running.total ?? 0 };
+      this.scan = {
+        id: running.id,
+        kind: running.kind,
+        done: running.done,
+        total: running.total ?? 0,
+      };
     }
     return stop;
   }

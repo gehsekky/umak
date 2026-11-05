@@ -3,6 +3,7 @@
   import { registerView } from "./lib/shell/regions";
   import Shell from "./lib/shell/Shell.svelte";
   import FoldersView from "./lib/views/FoldersView.svelte";
+  import ImportView from "./lib/views/ImportView.svelte";
   import LibraryView from "./lib/views/LibraryView.svelte";
   import PlaylistView from "./lib/views/PlaylistView.svelte";
   import Sidebar from "./lib/views/Sidebar.svelte";
@@ -14,6 +15,7 @@
   registerView("main", { id: "library", component: LibraryView });
   registerView("main", { id: "playlist", component: PlaylistView });
   registerView("main", { id: "folders", component: FoldersView });
+  registerView("main", { id: "import", component: ImportView });
   registerView("transport", { id: "transport", component: TransportBar });
   registerView("status", { id: "status", component: StatusBar });
 </script>

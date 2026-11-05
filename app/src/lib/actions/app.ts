@@ -2,7 +2,7 @@
 
 import { call } from "../api/client";
 import { countOf } from "../lists/format";
-import { pickFolder } from "../platform/dialog";
+import { pickExportFile, pickExportTarget, pickFolder } from "../platform/dialog";
 import { playerClient } from "../player/client";
 import { player } from "../player/state.svelte";
 import { app } from "../state/app.svelte";
@@ -53,6 +53,37 @@ export function registerAppActions(): void {
     label: "Cancel scan",
     run: async () => {
       if (app.scan) await call("jobs.cancel", { id: app.scan.id });
+    },
+  });
+  registerAction({
+    id: "library.export",
+    label: "Export library",
+    run: async () => {
+      const path = await pickExportTarget(`umak-library-${new Date().toISOString().slice(0, 10)}.json`);
+      if (!path) return;
+      const summary = await call("library.export", { path });
+      app.notify(
+        `Exported ${countOf(summary.tracks, "track")} and ${countOf(summary.playlists, "playlist")} to ${summary.path}`,
+      );
+    },
+  });
+  registerAction({
+    id: "library.chooseImport",
+    label: "Import library",
+    run: async () => {
+      const path = await pickExportFile();
+      if (!path) return;
+      app.importPreview = await call("library.import.preview", { path });
+      app.importReport = null;
+      app.view = { kind: "import" };
+    },
+  });
+  registerAction({
+    id: "library.startImport",
+    label: "Start import",
+    run: async ({ path, roots }) => {
+      app.importReport = null;
+      await call("library.import.start", { path, roots });
     },
   });
   registerAction({

@@ -21,6 +21,7 @@ use crate::library::{self, TrackPage, TrackSort};
 use crate::player::{BackendFactory, Player, PlayerAction, PlayerStatus, ProcessPlayer};
 use crate::playlists::{self, Playlist, PlaylistPage};
 use crate::scan::{self, ScanError, ScanOptions};
+use crate::transfer::{self, ExportSummary, ImportPreview, RootChoice};
 use crate::{AppInfo, app_info};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -198,6 +199,9 @@ commands![
     ControlPlayer,
     SeekPlayer,
     GetPlayerStatus,
+    ExportLibrary,
+    PreviewImport,
+    StartImport,
 ];
 
 #[derive(Debug, Deserialize, TS)]
@@ -304,7 +308,7 @@ pub fn add_root(db: &Database, path: &str, name: Option<String>) -> Result<Libra
     Ok(root)
 }
 
-fn resolve_root_path(path: &str) -> Result<PathBuf, ApiError> {
+pub(crate) fn resolve_root_path(path: &str) -> Result<PathBuf, ApiError> {
     let invalid = |message: String| ApiError::new(ErrorCode::InvalidArgs, message);
     if !Path::new(path).is_absolute() {
         return Err(invalid(format!("not an absolute path: {path}")));
@@ -318,7 +322,7 @@ fn resolve_root_path(path: &str) -> Result<PathBuf, ApiError> {
 }
 
 /// Rejects a root inside or around an existing one, which would index files twice.
-fn ensure_no_overlap(conn: &Connection, path: &Path) -> Result<(), ApiError> {
+pub(crate) fn ensure_no_overlap(conn: &Connection, path: &Path) -> Result<(), ApiError> {
     for root in select_roots(conn)? {
         let existing = Path::new(&root.path);
         if path.starts_with(existing) || existing.starts_with(path) {
@@ -629,6 +633,85 @@ impl Command for GetPlayerStatus {
     }
 }
 
+/// Writes this library's roots, track identities, user data, playlists and settings
+/// to a file another installation can import.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExportLibrary {
+    pub path: String,
+}
+
+impl Command for ExportLibrary {
+    const NAME: &'static str = "library.export";
+    type Output = ExportSummary;
+
+    fn run(self, core: &Core) -> Result<ExportSummary, ApiError> {
+        transfer::export_library(&core.db, Path::new(&self.path))
+    }
+}
+
+/// Reads an export without changing anything, so its folders can be located here.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewImport {
+    pub path: String,
+}
+
+impl Command for PreviewImport {
+    const NAME: &'static str = "library.import.preview";
+    type Output = ImportPreview;
+
+    fn run(self, core: &Core) -> Result<ImportPreview, ApiError> {
+        transfer::preview(&core.db, Path::new(&self.path))
+    }
+}
+
+/// Starts importing in the background. Roots not listed, or listed with a null path,
+/// are kept with their tracks marked missing.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct StartImport {
+    pub path: String,
+    pub roots: Vec<RootChoice>,
+}
+
+impl Command for StartImport {
+    const NAME: &'static str = "library.import.start";
+    type Output = JobRef;
+
+    fn run(self, core: &Core) -> Result<JobRef, ApiError> {
+        let (export, choices) = transfer::check_import(Path::new(&self.path), &self.roots)?;
+        let db = Arc::clone(&core.db);
+        let events = Arc::clone(&core.events);
+        let id = core.jobs.start(JobKind::Import, move |context| {
+            let mut report_progress = |progress: scan::ScanProgress| {
+                context.progress(progress.done, progress.total);
+                if progress.done > 0 {
+                    events.emit(&CoreEvent::LibraryChanged);
+                }
+            };
+            let report = transfer::import_library(
+                &db,
+                &export,
+                &choices,
+                ScanOptions::default(),
+                context.cancel_flag(),
+                &mut report_progress,
+            )
+            .map_err(|error| error.message)?;
+            events.emit(&CoreEvent::LibraryRootsChanged);
+            events.emit(&CoreEvent::LibraryChanged);
+            events.emit(&CoreEvent::PlaylistsChanged);
+            Ok(JobOutcome {
+                canceled: report.canceled,
+                scan: None,
+                import: Some(report),
+            })
+        })?;
+        Ok(JobRef { id })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 pub struct JobRef {
     pub id: String,
@@ -673,6 +756,7 @@ impl Command for StartScan {
             Ok(JobOutcome {
                 canceled: report.canceled,
                 scan: Some(report),
+                import: None,
             })
         })?;
         Ok(JobRef { id })
@@ -1068,6 +1152,95 @@ mod tests {
         let list = dispatch(&fixture.core, "library.roots.list", json!({})).unwrap();
         assert_eq!(list["roots"][0]["trackCount"], 1);
         assert_eq!(list["roots"][0]["missingCount"], 0);
+    }
+
+    #[test]
+    fn export_and_import_commands_work_end_to_end() {
+        let first = fixture();
+        let path = first.folder("Albums");
+        fs::write(Path::new(&path).join("song.mp3"), b"text").unwrap();
+        let root = first.add_root(&path).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        scan::scan_library(
+            &first.core.db,
+            None,
+            ScanOptions::default(),
+            &cancel,
+            &mut |_| {},
+        )
+        .unwrap();
+        dispatch(&first.core, "playlists.create", json!({ "name": "Mix" })).unwrap();
+
+        let file = first.dir.path().join("export.json");
+        let file = file.to_str().unwrap();
+        let summary = dispatch(&first.core, "library.export", json!({ "path": file })).unwrap();
+        assert_eq!(summary["tracks"], 1);
+        assert_eq!(summary["playlists"], 1);
+
+        let second = fixture();
+        let preview = dispatch(
+            &second.core,
+            "library.import.preview",
+            json!({ "path": file }),
+        )
+        .unwrap();
+        assert_eq!(preview["trackCount"], 1);
+        assert_eq!(preview["roots"][0]["id"], root["id"]);
+
+        let copy = second.folder("Copy");
+        fs::write(Path::new(&copy).join("song.mp3"), b"text").unwrap();
+        let job = dispatch(
+            &second.core,
+            "library.import.start",
+            json!({ "path": file, "roots": [{ "id": root["id"], "path": copy }] }),
+        )
+        .unwrap();
+        let finished = CoreEvent::JobFinished {
+            id: job["id"].as_str().unwrap().to_owned(),
+            kind: JobKind::Import,
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !second.events.0.lock().unwrap().contains(&finished) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the import never ended"
+            );
+            std::thread::yield_now();
+        }
+
+        let list = dispatch(&second.core, "jobs.list", json!({})).unwrap();
+        let listed = &list["jobs"][0];
+        assert_eq!(listed["status"], "completed", "{listed}");
+        assert_eq!(listed["kind"], "import");
+        assert_eq!(listed["import"]["matchedByPath"], 1);
+        assert_eq!(listed["import"]["playlistsAdded"], 1);
+        assert_eq!(listed["scan"], Value::Null);
+        let events = second.events.0.lock().unwrap();
+        assert!(events.contains(&CoreEvent::PlaylistsChanged));
+        assert!(events.contains(&CoreEvent::LibraryRootsChanged));
+        drop(events);
+        let playlists = dispatch(&second.core, "playlists.list", json!({})).unwrap();
+        assert_eq!(playlists["playlists"][0]["name"], "Mix");
+    }
+
+    #[test]
+    fn a_scan_and_an_import_cannot_run_together() {
+        let fixture = fixture();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        fixture
+            .core
+            .jobs
+            .start(JobKind::Scan, move |_| {
+                let _ = released.recv();
+                Err("stopped".to_owned())
+            })
+            .unwrap();
+        let refused = fixture
+            .core
+            .jobs
+            .start(JobKind::Import, |_| Err(format!("should not run {}", 1)));
+        assert_eq!(refused.unwrap_err().code, ErrorCode::Conflict);
+        release.send(()).unwrap();
     }
 
     #[test]

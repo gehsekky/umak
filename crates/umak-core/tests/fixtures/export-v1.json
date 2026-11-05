@@ -1,0 +1,84 @@
+{
+  "format": "umak-library-export",
+  "version": 1,
+  "exportedAt": 1793800000000,
+  "appVersion": "0.1.0",
+  "roots": [
+    {
+      "id": "6f0d3a52-71b6-4c8e-9f3a-1b2c3d4e5f60",
+      "name": "Music",
+      "path": "M:/old-machine/Music",
+      "addedAt": 1793700000000
+    }
+  ],
+  "tracks": [
+    {
+      "id": "a1a1a1a1-0000-4000-8000-000000000001",
+      "root": "6f0d3a52-71b6-4c8e-9f3a-1b2c3d4e5f60",
+      "relPath": "Artist/Album/01 First.flac",
+      "fingerprint": "01000102030405060708090a0b0c0d0e0f",
+      "addedAt": 1793700000001
+    },
+    {
+      "id": "a1a1a1a1-0000-4000-8000-000000000002",
+      "root": "6f0d3a52-71b6-4c8e-9f3a-1b2c3d4e5f60",
+      "relPath": "Artist/Album/02 Second.mp3",
+      "fingerprint": null,
+      "addedAt": 1793700000002
+    }
+  ],
+  "users": [
+    {
+      "name": "default",
+      "trackData": [
+        {
+          "track": "a1a1a1a1-0000-4000-8000-000000000001",
+          "rating": 8,
+          "playCount": 3,
+          "lastPlayedAt": 1793750000000
+        }
+      ],
+      "history": [
+        {
+          "track": "a1a1a1a1-0000-4000-8000-000000000001",
+          "playedAt": 1793750000000
+        }
+      ],
+      "playlists": [
+        {
+          "id": "b2b2b2b2-0000-4000-8000-000000000001",
+          "name": "Favorites",
+          "kind": "manual",
+          "rule": null,
+          "currentPosition": null,
+          "currentMs": null,
+          "createdAt": 1793710000000,
+          "updatedAt": 1793720000000,
+          "tracks": [
+            "a1a1a1a1-0000-4000-8000-000000000002",
+            "a1a1a1a1-0000-4000-8000-000000000001"
+          ]
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000002",
+          "name": "Player playlist",
+          "kind": "player",
+          "rule": null,
+          "currentPosition": 0,
+          "currentMs": 1500,
+          "createdAt": 0,
+          "updatedAt": 0,
+          "tracks": [
+            "a1a1a1a1-0000-4000-8000-000000000001"
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "key": "example.setting",
+      "value": "true"
+    }
+  ]
+}

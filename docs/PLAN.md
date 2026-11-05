@@ -248,7 +248,8 @@ The database can be rebuilt from the files, except for ratings, play counts, pla
 
 - Export writes one versioned JSON file holding library roots, each track's stable ID, root-relative path and fingerprint, per-user data, playlists and settings. It leaves out tags and caches, which are rebuilt from the files.
 - Import on another installation asks where each root lives on that machine, then matches tracks by stable ID, then relative path, then fingerprint.
-- Tracks with no matching file are kept and marked missing, and import reports them. Existing data is kept on a conflict, unless the imported field is the only value.
+- Tracks with no matching file are kept and marked missing, and import reports them. They show the file name as their title until a later scan finds the file and reads its tags. Existing data is kept on a conflict, unless the imported field is the only value.
+- A track an import finds for the first time takes its exported ID and added date, so IDs stay stable across installations. A track already in the library keeps its own. Importing the same file again changes nothing.
 - The format carries a version number, and new versions of the app can read older files.
 
 ## Player and playlist model

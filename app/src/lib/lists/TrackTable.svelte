@@ -173,8 +173,9 @@
             {player.playingTrackId === info.id ? "▶" : number(item, index)}
           </div>
           <div role="gridcell" title={info.title}>
-            {info.title}
+            <!-- First, so a long title cannot push it out of sight. -->
             {#if info.missing}<span class="tag">Missing</span>{/if}
+            {info.title}
           </div>
           <div role="gridcell" title={info.artist}>{info.artist}</div>
           <div role="gridcell" title={info.album}>{info.album}</div>
@@ -265,7 +266,7 @@
   }
 
   .tag {
-    margin-left: var(--space-xs);
+    margin-right: var(--space-xs);
     padding: 0 var(--space-xs);
     border: 1px solid var(--color-danger);
     border-radius: var(--radius);

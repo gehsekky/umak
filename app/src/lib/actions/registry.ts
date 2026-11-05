@@ -10,6 +10,9 @@ export type ActionMap = {
   "library.rescan": void;
   "library.cancelScan": void;
   "library.focusSearch": void;
+  "library.export": void;
+  "library.chooseImport": void;
+  "library.startImport": { path: string; roots: { id: string; path: string | null }[] };
   "playlists.startCreate": void;
   "playlists.create": { name: string };
   "playlists.rename": { id: string; name: string };

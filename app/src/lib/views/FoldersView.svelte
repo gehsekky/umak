@@ -8,6 +8,12 @@
   <div class="header">
     <h1>{actionLabel("nav.folders")}</h1>
     <span class="spacer"></span>
+    <button disabled={app.scan !== null} onclick={() => runAction("library.chooseImport")}>
+      {actionLabel("library.chooseImport")}
+    </button>
+    <button disabled={app.roots.length === 0} onclick={() => runAction("library.export")}>
+      {actionLabel("library.export")}
+    </button>
     <button
       disabled={app.scan !== null || app.roots.length === 0}
       onclick={() => runAction("library.rescan")}

@@ -51,7 +51,7 @@ fn mpeg_audio(seed: u32) -> Vec<u8> {
     audio
 }
 
-fn mp3_bytes(seed: u32, frames: &[(&str, &str)]) -> Vec<u8> {
+pub(crate) fn mp3_bytes(seed: u32, frames: &[(&str, &str)]) -> Vec<u8> {
     [id3_tag(frames), mpeg_audio(seed)].concat()
 }
 
@@ -232,7 +232,11 @@ impl Library {
     }
 }
 
-fn tagged<'a>(title: &'a str, artist: &'a str, album: &'a str) -> Vec<(&'a str, &'a str)> {
+pub(crate) fn tagged<'a>(
+    title: &'a str,
+    artist: &'a str,
+    album: &'a str,
+) -> Vec<(&'a str, &'a str)> {
     vec![("TIT2", title), ("TPE1", artist), ("TALB", album)]
 }
 

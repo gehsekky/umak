@@ -10,6 +10,7 @@ pub mod player;
 pub mod playlists;
 pub mod scan;
 pub mod stats;
+pub mod transfer;
 
 use serde::Serialize;
 use ts_rs::TS;
