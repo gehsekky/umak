@@ -2,11 +2,13 @@
 //!
 //! This crate must never depend on Tauri or UI code.
 
+pub mod api;
 pub mod db;
 
 use serde::Serialize;
+use ts_rs::TS;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 pub struct AppInfo {
     pub name: &'static str,
     pub version: &'static str,

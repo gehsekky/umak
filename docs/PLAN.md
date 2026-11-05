@@ -134,7 +134,7 @@ The rule that protects the design: the crates under `crates/` never depend on Ta
 
 A Tauri app is a Rust process plus a webview that renders the UI, connected by built-in IPC. Four mechanisms are used:
 
-- Commands: the UI calls `invoke`, a Rust function runs and returns a JSON result. This is the "send a command" half of the command layer.
+- Commands: the UI calls one IPC entry point with a command name and JSON arguments, and `umak-core` runs the matching typed command and returns a JSON result. This is the "send a command" half of the command layer. TypeScript types are generated from the Rust types, and a test fails if the committed copies go stale.
 - Events: Rust emits named events such as playback state or scan progress, and the UI subscribes. This avoids polling.
 - Channels: ordered streams for high-frequency or large data, such as visualizer frames and long result sets.
 - A custom URI scheme: binary data like album art is served through it and used as an ordinary image source, never through JSON.

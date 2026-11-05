@@ -5,6 +5,7 @@
 //! local disk, because WAL does not work across a network filesystem.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
@@ -13,6 +14,7 @@ use rusqlite::{Connection, OpenFlags};
 const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_initial.sql")];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_IDLE_READERS: usize = 4;
 
 pub const DEFAULT_USER_ID: i64 = 1;
 pub const VARIOUS_ARTISTS_PUBLIC_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -35,7 +37,8 @@ pub fn new_public_id() -> String {
 
 pub struct Database {
     path: PathBuf,
-    writer: Connection,
+    writer: Mutex<Connection>,
+    idle_readers: Mutex<Vec<Connection>>,
 }
 
 impl Database {
@@ -45,15 +48,40 @@ impl Database {
         let mut writer = Connection::open(&path)?;
         configure_writer(&writer)?;
         migrate(&mut writer, MIGRATIONS)?;
-        Ok(Self { path, writer })
+        Ok(Self {
+            path,
+            writer: Mutex::new(writer),
+            idle_readers: Mutex::new(Vec::new()),
+        })
     }
 
-    pub fn writer(&mut self) -> &mut Connection {
-        &mut self.writer
+    /// Runs `work` on the single writer connection, waiting for any other writer.
+    pub fn write<T, E: From<DbError>>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> Result<T, E>,
+    ) -> Result<T, E> {
+        work(&mut lock(&self.writer))
     }
 
-    /// Opens a new read-only connection.
-    pub fn reader(&self) -> Result<Connection, DbError> {
+    /// Runs `work` on a pooled read-only connection, which never waits for the writer.
+    pub fn read<T, E: From<DbError>>(
+        &self,
+        work: impl FnOnce(&Connection) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let idle = lock(&self.idle_readers).pop();
+        let reader = match idle {
+            Some(reader) => reader,
+            None => self.open_reader()?,
+        };
+        let result = work(&reader);
+        let mut idle = lock(&self.idle_readers);
+        if idle.len() < MAX_IDLE_READERS {
+            idle.push(reader);
+        }
+        result
+    }
+
+    fn open_reader(&self) -> Result<Connection, DbError> {
         let reader = Connection::open_with_flags(
             &self.path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -61,6 +89,12 @@ impl Database {
         reader.busy_timeout(BUSY_TIMEOUT)?;
         Ok(reader)
     }
+}
+
+/// A panic mid-transaction rolls back when the transaction drops, so the connection
+/// behind a poisoned lock is still sound.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn configure_writer(conn: &Connection) -> Result<(), DbError> {
@@ -96,6 +130,12 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    impl Database {
+        fn writer(&mut self) -> &mut Connection {
+            self.writer.get_mut().unwrap()
+        }
+    }
 
     fn open_temp() -> (TempDir, Database) {
         let dir = tempfile::tempdir().unwrap();
@@ -237,8 +277,8 @@ mod tests {
     fn a_reader_sees_committed_data_during_a_write_and_cannot_write() {
         let (_dir, mut db) = open_temp();
         fixture_track(db.writer());
-        let reader = db.reader().unwrap();
-        let tx = db.writer.transaction().unwrap();
+        let reader = db.open_reader().unwrap();
+        let tx = db.writer().transaction().unwrap();
         tx.execute("DELETE FROM raw_tags", []).unwrap();
         tx.execute("UPDATE tracks SET title = 'Changed'", [])
             .unwrap();
@@ -451,6 +491,51 @@ mod tests {
                 "{index} needs a sort: {plan}"
             );
         }
+    }
+
+    #[test]
+    fn read_works_while_the_writer_is_held_and_write_is_visible_after() {
+        let (_dir, db) = open_temp();
+        db.write(|conn| {
+            let root = insert_root(conn);
+            let tx = conn.transaction()?;
+            tx.execute(
+                "UPDATE library_roots SET name = 'Changed' WHERE id = ?1",
+                [root],
+            )?;
+            let name: String = db.read(|reader| {
+                reader
+                    .query_row("SELECT name FROM library_roots", [], |row| row.get(0))
+                    .map_err(DbError::from)
+            })?;
+            assert_eq!(name, "Music");
+            tx.commit()?;
+            Ok::<_, DbError>(())
+        })
+        .unwrap();
+        let name: String = db
+            .read(|reader| {
+                reader
+                    .query_row("SELECT name FROM library_roots", [], |row| row.get(0))
+                    .map_err(DbError::from)
+            })
+            .unwrap();
+        assert_eq!(name, "Changed");
+    }
+
+    #[test]
+    fn idle_readers_are_reused_and_capped() {
+        let (_dir, db) = open_temp();
+        fn nested(db: &Database, depth: usize) -> Result<(), DbError> {
+            if depth == 0 {
+                return Ok(());
+            }
+            db.read(|_| nested(db, depth - 1))
+        }
+        nested(&db, MAX_IDLE_READERS + 3).unwrap();
+        assert_eq!(db.idle_readers.lock().unwrap().len(), MAX_IDLE_READERS);
+        nested(&db, 1).unwrap();
+        assert_eq!(db.idle_readers.lock().unwrap().len(), MAX_IDLE_READERS);
     }
 
     #[test]

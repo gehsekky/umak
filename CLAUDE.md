@@ -18,6 +18,7 @@ Phase 1: Library foundation. See "Phase 1 brief" in `docs/PLAN.md`. Work one pha
 - The user's real music collection (path in `CLAUDE.local.md`) is scanned read-only; tag-writing tests run on copies.
 - Library code is built for maximum speed. About 30k tracks is the target to verify, not a design limit.
 - UI colors, fonts and spacing come only from theme tokens. UI actions go through the action registry, and the UI reaches the player only through the player client interface.
+- The UI reaches the core only through `app/src/lib/api/client.ts`. Transport adapters only forward JSON and events, with no library logic of their own.
 - Build the seams in the "Extension points" section of `docs/PLAN.md` as surrounding code is written, but not the features behind them. Public repository: keep machine-specific paths and hostnames in `CLAUDE.local.md`.
 
 ## Layout
@@ -49,3 +50,10 @@ Run from `app/` (run `npm install` first):
 - Set `VITE_UMAK_THEME=test` when building to try the test theme.
 
 TypeScript stays on version 6 until `svelte-check` supports version 7.
+
+## Adding a command
+
+1. Define the argument and result structs in `crates/umak-core/src/api.rs`, implement `Command`, and list it in `commands!`. Results are named structs.
+2. Regenerate the TypeScript types by running `cargo test -p umak-core` with `UMAK_UPDATE_BINDINGS=1` set, and commit `app/src/lib/api/generated/`.
+
+Without step 2, `typescript_bindings_are_current` fails.
