@@ -2,12 +2,14 @@
 //! an engine through `PlayerBackend`: the `umak-play` process in phase 1, an in-process
 //! engine later. Every way of playing something replaces that one list.
 
+use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -24,6 +26,12 @@ const PLAYER_PATH_VARIABLE: &str = "UMAK_PLAY_PATH";
 const PLAYER_NAME: &str = "umak-play";
 /// How much playback can be lost if the app ends without warning.
 const SAVE_POSITION_EVERY_MS: u64 = 5000;
+/// Written next to the database when playback has a problem, so a stutter leaves
+/// evidence behind. Each line is tab-separated.
+const HEALTH_LOG_NAME: &str = "player-health.log";
+const MAX_HEALTH_LOG_BYTES: u64 = 256 * 1024;
+/// A device normally asks for audio every 10 ms or so. This is well past that.
+const STALL_US: u64 = 100_000;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -92,9 +100,43 @@ struct Shared {
     /// Whether the engine holds a list. If not, Play restores the saved one.
     loaded: AtomicBool,
     saved_position_ms: Mutex<u64>,
+    seen_underruns: Mutex<u64>,
 }
 
 impl Shared {
+    /// Records an underrun or a device stall. Failing to log must never affect playback.
+    fn log_health(&self, underruns: u64, queued_ms: u64, longest_gap_us: u64) {
+        let new_underruns = {
+            let mut seen = lock(&self.seen_underruns);
+            let new = underruns.saturating_sub(*seen);
+            *seen = underruns;
+            new
+        };
+        if new_underruns == 0 && longest_gap_us < STALL_US {
+            return;
+        }
+        let path = self.db.path().with_file_name(HEALTH_LOG_NAME);
+        if fs::metadata(&path).is_ok_and(|file| file.len() > MAX_HEALTH_LOG_BYTES) {
+            let _ = fs::remove_file(&path);
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis());
+        let status = self.status_snapshot();
+        let track = status.track.map_or_else(String::new, |track| track.title);
+        let line = format!(
+            "{now}\tposition_ms={}\tnew_underruns={new_underruns}\tqueued_ms={queued_ms}\tlongest_gap_us={longest_gap_us}\t{track}\n",
+            status.position_ms
+        );
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+
+    fn status_snapshot(&self) -> PlayerStatus {
+        lock(&self.status).clone()
+    }
+
     fn track_row(&self, public_id: &str) -> Option<TrackRow> {
         self.db
             .read(|conn| {
@@ -181,6 +223,11 @@ impl Shared {
                     position_ms: position_ms as i64,
                 });
             }
+            PlayerEvent::Health {
+                underruns,
+                queued_ms,
+                longest_gap_us,
+            } => self.log_health(underruns, queued_ms, longest_gap_us),
             PlayerEvent::TrackFailed { id, message } => {
                 let title = self
                     .track_row(&id)
@@ -211,6 +258,7 @@ impl Player {
                 status: Mutex::default(),
                 loaded: AtomicBool::new(false),
                 saved_position_ms: Mutex::new(0),
+                seen_underruns: Mutex::new(0),
             }),
             backend: Mutex::new(None),
             factory: Mutex::new(factory),
@@ -782,6 +830,37 @@ mod tests {
             panic!("expected a load, got {commands:?}");
         };
         assert_eq!(*start_ms, 1000);
+    }
+
+    #[test]
+    fn playback_problems_are_logged_and_healthy_playback_is_not() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        fixture.signal(state(PlaybackState::Playing, 0, "a", 1000));
+        let log = fixture.db.path().with_file_name(HEALTH_LOG_NAME);
+        let health = |underruns, longest_gap_us| PlayerEvent::Health {
+            underruns,
+            queued_ms: 1990,
+            longest_gap_us,
+        };
+
+        fixture.signal(health(0, 10_000));
+        assert!(!log.exists(), "healthy playback writes nothing");
+
+        fixture.signal(health(2, 10_000));
+        fixture.signal(health(2, 10_000));
+        fixture.signal(health(2, STALL_US + 1));
+        let text = fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].contains("new_underruns=2"), "{text}");
+        assert!(lines[0].contains("position_ms=1000"), "{text}");
+        assert!(lines[0].ends_with('a'), "{text}");
+        assert!(lines[1].contains("new_underruns=0"), "{text}");
+        assert!(
+            lines[1].contains(&format!("longest_gap_us={}", STALL_US + 1)),
+            "{text}"
+        );
     }
 
     #[test]

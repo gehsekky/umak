@@ -277,6 +277,14 @@ impl Worker {
             self.last_position = Instant::now();
             let position_ms = self.position_ms();
             (self.events)(PlayerEvent::Position { position_ms });
+            let channels = u64::from(self.format.channels);
+            let queued = (self.capacity - self.producer.slots()) as u64 / channels;
+            let underruns = self.shared.underruns();
+            (self.events)(PlayerEvent::Health {
+                underruns,
+                queued_ms: queued * 1000 / u64::from(self.format.sample_rate),
+                longest_gap_us: self.shared.take_longest_gap_us(),
+            });
         }
     }
 

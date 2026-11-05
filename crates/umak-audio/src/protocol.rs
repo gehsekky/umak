@@ -65,6 +65,15 @@ pub enum PlayerEvent {
     Position {
         position_ms: u64,
     },
+    /// Playback health, sent with each position while playing.
+    #[serde(rename_all = "camelCase")]
+    Health {
+        /// Times the queue ran dry since the engine started. Each is an audible gap.
+        underruns: u64,
+        queued_ms: u64,
+        /// The longest wait between output callbacks since the last report.
+        longest_gap_us: u64,
+    },
     /// A track could not be played. Playback moves on to the next one.
     TrackFailed {
         id: String,

@@ -59,6 +59,10 @@ impl Database {
         })
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Runs `work` on the single writer connection, waiting for any other writer.
     pub fn write<T, E: From<DbError>>(
         &self,

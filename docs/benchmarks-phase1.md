@@ -39,6 +39,16 @@ The app stays responsive while a scan reads cold files from the hard drive and w
 - Scrollbar jumps: p95 of 23 ms.
 - Search: 19 to 34 ms from keystroke to screen.
 
+## Playback during a scan
+
+The player's sample queue stayed full and nothing stalled while a scan read cold files from the same hard drive. Measured on the real output device at zero gain, once as separate programs for 90 s on each of two cold FLAC files, and twice in the real app repeating a first import for 90 s:
+
+- Underruns: none in any run.
+- Longest wait between device callbacks: 13.5 ms, against a normal 10 ms.
+- Queue: about 2 s throughout, once the track had started.
+
+This measures what the player hands to Windows, so it cannot see a problem after that point. One real listening session on 2026-11-04 did stutter during a scan, and the cause is not yet known. The app now writes `player-health.log` beside its database when the engine sees an underrun or a stall.
+
 ## First import against raw disk cost
 
 | Step, 30,000 files with cold data, 4 threads | Time |

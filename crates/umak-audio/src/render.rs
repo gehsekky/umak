@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::time::Instant;
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
@@ -18,6 +19,7 @@ pub struct Shared {
     underruns: AtomicU64,
     volume_bits: AtomicU32,
     output_failed: AtomicBool,
+    longest_gap_us: AtomicU64,
 }
 
 impl Shared {
@@ -30,6 +32,7 @@ impl Shared {
             underruns: AtomicU64::new(0),
             volume_bits: AtomicU32::new(1.0_f32.to_bits()),
             output_failed: AtomicBool::new(false),
+            longest_gap_us: AtomicU64::new(0),
         }
     }
 
@@ -60,6 +63,12 @@ impl Shared {
         self.flush_ack.load(Ordering::Acquire) >= request
     }
 
+    /// The longest wait between output callbacks since this was last asked. A long one
+    /// means the device or the OS stalled, whatever the queue held.
+    pub fn take_longest_gap_us(&self) -> u64 {
+        self.longest_gap_us.swap(0, Ordering::Relaxed)
+    }
+
     pub fn mark_output_failed(&self) {
         self.output_failed.store(true, Ordering::Release);
     }
@@ -77,6 +86,7 @@ pub struct Renderer {
     tap: Option<Box<dyn OutputTap>>,
     /// Whether samples have flowed since the last flush, so silence means an underrun.
     active: bool,
+    last_call: Option<Instant>,
 }
 
 /// Creates the two ends of the sample queue. Its capacity is in samples.
@@ -95,6 +105,7 @@ pub fn channel(
         chain,
         tap,
         active: false,
+        last_call: None,
     };
     (producer, renderer, shared)
 }
@@ -110,6 +121,13 @@ impl Renderer {
 
     /// Fills an output buffer of interleaved samples. Called by the audio thread.
     pub fn render(&mut self, output: &mut [f32]) {
+        let now = Instant::now();
+        if let Some(last) = self.last_call {
+            let gap = now.duration_since(last).as_micros() as u64;
+            self.shared.longest_gap_us.fetch_max(gap, Ordering::Relaxed);
+        }
+        self.last_call = Some(now);
+
         let request = self.shared.flush_request.load(Ordering::Acquire);
         if request != self.shared.flush_ack.load(Ordering::Relaxed) {
             let queued = self.consumer.slots();
