@@ -355,10 +355,10 @@ mod tests {
             (renamed.name.as_str(), renamed.updated_at),
             ("Long Drive", 9)
         );
-        assert_eq!(fixture.run(|conn| list(conn)).unwrap(), [renamed]);
+        assert_eq!(fixture.run(list).unwrap(), [renamed]);
 
         fixture.run(|conn| delete(conn, &made.id)).unwrap();
-        assert!(fixture.run(|conn| list(conn)).unwrap().is_empty());
+        assert!(fixture.run(list).unwrap().is_empty());
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
             fixture.run(|conn| create(conn, name, 1)).unwrap();
         }
         let names: Vec<String> = fixture
-            .run(|conn| list(conn))
+            .run(list)
             .unwrap()
             .into_iter()
             .map(|playlist| playlist.name)
@@ -392,7 +392,7 @@ mod tests {
     fn the_reserved_player_playlist_is_out_of_reach() {
         let fixture = fixture();
         let player = DEFAULT_PLAYER_PLAYLIST_PUBLIC_ID;
-        assert!(fixture.run(|conn| list(conn)).unwrap().is_empty());
+        assert!(fixture.run(list).unwrap().is_empty());
         for error in [
             fixture
                 .run(|conn| rename(conn, player, "Mine", 1))
