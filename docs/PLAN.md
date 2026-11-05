@@ -158,7 +158,8 @@ The library engine is the heart of the app. It never modifies music files unless
 
 **Tag model**
 
-- Treat artists, genres and composers as multi-value fields.
+- Tags are the source of truth. Values are stored as written and never split or derived; a value that needs interpreting is a tagging problem to report and fix in the file.
+- Treat artists, genres and composers as multi-value fields, using only the separate values a file actually stores.
 - Separate album artist from track artist, and support compilation flags.
 - Keep disc and track numbers, year and original date, ReplayGain values, and MusicBrainz IDs.
 - Preserve unknown and custom tags in a raw key-value store, so nothing is lost on write.
@@ -529,6 +530,6 @@ Build in six phases, each ending in something usable. The 30k-track test library
 **Open questions**
 
 - [x] Which M4A codecs do the files use? The 274 M4A files in the library roots are 203 AAC and 71 ALAC. HE-AAC is not yet ruled out among the AAC files; check when the player is built.
-- [ ] Should a single artist tag be split on `/`? 411 tracks use it for several artists (`2Pac/Danny Boy`), but it also appears in names (`AC/DC`), so tags are not split for now. These become separate artist rows such as `Dr. Dre/Eminem`.
+- [x] Should a single artist tag be split on `/`? No. Tags are the source of truth, so a value like `Dr. Dre/Eminem` stays one artist until the file is retagged. `umak-scan` lists these values as tagging problems.
 - [ ] When the server is added, should it run inside the desktop app, headless on the NAS, or both?
 - [ ] Is bit-perfect or exclusive-mode output a requirement from the start?

@@ -14,6 +14,7 @@ Phase 1: Library foundation. See "Phase 1 brief" in `docs/PLAN.md`. Work one pha
 - Paths are stored relative to a library root.
 - Per-user data (ratings, play counts, play history, playlists) carries a user id.
 - The audio thread never blocks, allocates or takes locks.
+- Tags are the source of truth. Store values as written; never split or derive from them. Report suspect values as tagging problems.
 - Music files change only through the safe tag-write path (temp file, verify, replace) or a user-requested rename or move.
 - The user's real music collection (path in `CLAUDE.local.md`) is scanned read-only; tag-writing tests run on copies.
 - Library code is built for maximum speed. About 30k tracks is the target to verify, not a design limit.
@@ -39,7 +40,7 @@ docs/                 PLAN.md and architecture notes
 Run from the repository root:
 
 - `cargo test --workspace`: Rust tests.
-- `cargo run -p umak-scan -- <database> <folder>... [--threads N] [--samples N]`: scan folders into a database and print a report. Keep test databases outside the repository.
+- `cargo run -p umak-scan -- <database> [folder]... [--threads N] [--samples N] [--no-scan] [--list N] [--json]`: scan folders into a database and print statistics, including album grouping and tagging problems. Keep test databases outside the repository.
 - `cargo run -p umak-play`: the player binary.
 - `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio`.
 

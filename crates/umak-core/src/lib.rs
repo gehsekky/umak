@@ -6,6 +6,7 @@ pub mod api;
 pub mod db;
 pub mod jobs;
 pub mod scan;
+pub mod stats;
 
 use serde::Serialize;
 use ts_rs::TS;
