@@ -18,6 +18,7 @@ use ts_rs::TS;
 use crate::db::{Database, DbError, new_public_id};
 use crate::jobs::{JobInfo, JobKind, JobOutcome, JobRunner};
 use crate::library::{self, TrackPage, TrackSort};
+use crate::player::{BackendFactory, Player, PlayerAction, PlayerStatus, ProcessPlayer};
 use crate::playlists::{self, Playlist, PlaylistPage};
 use crate::scan::{self, ScanError, ScanOptions};
 use crate::{AppInfo, app_info};
@@ -78,6 +79,18 @@ pub enum CoreEvent {
     LibraryChanged,
     /// A playlist or its contents changed.
     PlaylistsChanged,
+    /// Playback state or the current track changed.
+    PlayerChanged {
+        status: Box<PlayerStatus>,
+    },
+    /// Sent a few times a second during playback.
+    #[serde(rename_all = "camelCase")]
+    PlayerPosition {
+        position_ms: i64,
+    },
+    PlayerError {
+        message: String,
+    },
     JobProgress {
         id: String,
         kind: JobKind,
@@ -101,14 +114,30 @@ pub struct Core {
     db: Arc<Database>,
     events: Arc<dyn EventSink>,
     jobs: JobRunner,
+    player: Player,
 }
 
 impl Core {
     pub fn new(db: Database, events: Box<dyn EventSink>) -> Result<Self, DbError> {
+        Self::with_player(db, events, Box::new(ProcessPlayer::spawn))
+    }
+
+    /// Creates a core that plays through a given backend.
+    pub fn with_player(
+        db: Database,
+        events: Box<dyn EventSink>,
+        backend: BackendFactory,
+    ) -> Result<Self, DbError> {
         let db = Arc::new(db);
         let events: Arc<dyn EventSink> = Arc::from(events);
         let jobs = JobRunner::new(Arc::clone(&db), Arc::clone(&events))?;
-        Ok(Self { db, events, jobs })
+        let player = Player::new(Arc::clone(&db), Arc::clone(&events), backend);
+        Ok(Self {
+            db,
+            events,
+            jobs,
+            player,
+        })
     }
 }
 
@@ -164,6 +193,11 @@ commands![
     AddPlaylistTracks,
     RemovePlaylistItems,
     MovePlaylistItems,
+    PlayTracks,
+    PlayPlaylist,
+    ControlPlayer,
+    SeekPlayer,
+    GetPlayerStatus,
 ];
 
 #[derive(Debug, Deserialize, TS)]
@@ -511,6 +545,87 @@ impl Command for MovePlaylistItems {
         core.change_playlists(|conn, now| {
             playlists::move_items(conn, &self.id, &self.positions, self.before, now)
         })
+    }
+}
+
+/// Replaces the player playlist with these tracks and plays from `start_index`.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlayTracks {
+    pub track_ids: Vec<String>,
+    pub start_index: u32,
+}
+
+impl Command for PlayTracks {
+    const NAME: &'static str = "player.playTracks";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.play_tracks(&self.track_ids, self.start_index)?;
+        Ok(core.player.status())
+    }
+}
+
+/// Copies a saved playlist into the player playlist and plays from `start_index`.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlayPlaylist {
+    pub id: String,
+    pub start_index: u32,
+}
+
+impl Command for PlayPlaylist {
+    const NAME: &'static str = "player.playPlaylist";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.play_playlist(&self.id, self.start_index)?;
+        Ok(core.player.status())
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ControlPlayer {
+    pub action: PlayerAction,
+}
+
+impl Command for ControlPlayer {
+    const NAME: &'static str = "player.control";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.control(self.action)?;
+        Ok(core.player.status())
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SeekPlayer {
+    pub ms: u32,
+}
+
+impl Command for SeekPlayer {
+    const NAME: &'static str = "player.seek";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.seek(u64::from(self.ms))?;
+        Ok(core.player.status())
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetPlayerStatus {}
+
+impl Command for GetPlayerStatus {
+    const NAME: &'static str = "player.status";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        Ok(core.player.status())
     }
 }
 

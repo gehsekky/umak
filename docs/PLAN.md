@@ -107,7 +107,7 @@ The UI sends commands and receives state events; remote clients will use the HTT
 
 The core runs the audio engine on its own real-time thread and the scanner on a worker pool. The UI never touches audio or the database directly; it only sends commands and renders state. The same core compiles to a headless binary for server-only use.
 
-In phase 1 the audio engine runs in the separate `umak-play` process, so the library can be built and tested with a minimal player. The app reaches it through a player client interface. Phase 2 adds an in-process implementation of that interface, and the UI does not change. `umak-play` stays as a test tool.
+In phase 1 the audio engine runs in the separate `umak-play` process, so the library can be built and tested with a minimal player. The app reaches it through a player client interface. Phase 2 adds an in-process implementation of that interface, and the UI does not change. `umak-play` stays as a test tool. The player protocol lives in `umak-audio` without its `engine` feature, so `umak-core` can speak it without building any audio code.
 
 **Repository layout: one monorepo**
 
@@ -530,7 +530,7 @@ Build in six phases, each ending in something usable. The 30k-track test library
 
 **Open questions**
 
-- [x] Which M4A codecs do the files use? The 274 M4A files in the library roots are 203 AAC and 71 ALAC. HE-AAC is not yet ruled out among the AAC files; check when the player is built.
+- [x] Which M4A codecs do the files use? The 274 M4A files in the library roots are 203 AAC and 71 ALAC, and all of them decode fully with Symphonia. Each decodes at the sample rate its tags state, so none is HE-AAC, which would decode at half the rate.
 - [x] Should a single artist tag be split on `/`? No. Tags are the source of truth, so a value like `Dr. Dre/Eminem` stays one artist until the file is retagged. `umak-scan` lists these values as tagging problems.
 - [ ] When the server is added, should it run inside the desktop app, headless on the NAS, or both?
 - [ ] Is bit-perfect or exclusive-mode output a requirement from the start?

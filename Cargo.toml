@@ -11,5 +11,5 @@ repository = "https://github.com/gehsekky/umak"
 
 [workspace.dependencies]
 umak-core = { path = "crates/umak-core" }
-umak-audio = { path = "crates/umak-audio" }
+umak-audio = { path = "crates/umak-audio", default-features = false }
 serde = { version = "1", features = ["derive"] }

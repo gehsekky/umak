@@ -17,6 +17,13 @@ export type ActionMap = {
   "playlists.addTracks": { id: string; trackIds: string[] };
   "playlists.removeItems": { id: string; positions: number[] };
   "playlists.moveItems": { id: string; positions: number[]; before: number | null };
+  "player.playTracks": { trackIds: string[]; startIndex: number };
+  "player.playPlaylist": { id: string; startIndex: number };
+  "player.toggle": void;
+  "player.stop": void;
+  "player.next": void;
+  "player.previous": void;
+  "player.seek": { ms: number };
 };
 
 export type ActionId = keyof ActionMap;

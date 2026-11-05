@@ -7,4 +7,19 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["engine"]
+# Everything that touches audio. Without it the crate is only the player protocol.
+engine = ["dep:cpal", "dep:rtrb", "dep:rubato", "dep:symphonia", "dep:audioadapter-buffers"]
+
 [dependencies]
+serde.workspace = true
+ts-rs = "12"
+audioadapter-buffers = { version = "5", optional = true }
+cpal = { version = "0.18", optional = true }
+rtrb = { version = "0.4", optional = true }
+rubato = { version = "5", optional = true }
+symphonia = { version = "0.6", features = ["all-codecs", "all-formats"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

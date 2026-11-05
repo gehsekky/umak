@@ -131,6 +131,13 @@
       {countOf(playlist.trackCount, "track")}, {formatTotalTime(playlist.durationMs)}
     </span>
     <span class="spacer"></span>
+    <button
+      class="primary"
+      disabled={playlist.trackCount === 0}
+      onclick={() => runAction("player.playPlaylist", { id, startIndex: 0 })}
+    >
+      {actionLabel("player.playPlaylist")}
+    </button>
     <button onclick={startRename}>Rename</button>
     {#if confirmingDelete}
       <button class="danger" onclick={() => runAction("playlists.delete", { id })}>
@@ -160,6 +167,7 @@
     label="Tracks in {playlist.name}"
     track={(item) => item.track}
     number={(_, index) => String(index + 1)}
+    onactivate={(_, index) => runAction("player.playPlaylist", { id, startIndex: index })}
   >
     {#snippet empty()}
       <p>This playlist is empty. Select tracks in the library to add them.</p>
@@ -235,6 +243,17 @@
   button:focus-visible {
     outline: 1px solid var(--color-accent);
     outline-offset: 1px;
+  }
+
+  button.primary:enabled {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    color: var(--color-on-accent);
+  }
+
+  button:disabled {
+    color: var(--color-text-muted);
+    cursor: default;
   }
 
   button.danger {

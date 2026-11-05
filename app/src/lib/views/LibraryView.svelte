@@ -69,6 +69,21 @@
     }
   });
 
+  /** Plays the selection if the row is part of it, and otherwise just that song. */
+  function activate(row: TrackRow): void {
+    const trackIds =
+      selection.size > 1 && selection.has(row.id) ? ([...selection.keys] as string[]) : [row.id];
+    const startIndex = Math.max(trackIds.indexOf(row.id), 0);
+    void runAction("player.playTracks", { trackIds, startIndex });
+  }
+
+  function playSelection(): void {
+    void runAction("player.playTracks", {
+      trackIds: [...selection.keys] as string[],
+      startIndex: 0,
+    });
+  }
+
   async function addSelection(): Promise<void> {
     if (!addTarget) return;
     const trackIds = [...selection.keys] as string[];
@@ -105,6 +120,7 @@
     {/if}
   </span>
   {#if selection.size > 0}
+    <button class="primary" onclick={playSelection}>{actionLabel("player.playTracks")}</button>
     <select
       bind:value={addTarget}
       onchange={addSelection}
@@ -130,6 +146,7 @@
   number={(row) => (row.trackNo > 0 ? String(row.trackNo) : "")}
   {sort}
   onsort={choose}
+  onactivate={activate}
 >
   {#snippet empty()}
     {#if query.trim()}

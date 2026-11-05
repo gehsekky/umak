@@ -3,6 +3,8 @@
 import { call } from "../api/client";
 import { countOf } from "../lists/format";
 import { pickFolder } from "../platform/dialog";
+import { playerClient } from "../player/client";
+import { player } from "../player/state.svelte";
 import { app } from "../state/app.svelte";
 import { onActionError, registerAction } from "./registry";
 
@@ -113,4 +115,29 @@ export function registerAppActions(): void {
     label: "Move in playlist",
     run: ({ id, positions, before }) => call("playlists.moveItems", { id, positions, before }),
   });
+
+  registerAction({
+    id: "player.playTracks",
+    label: "Play",
+    run: ({ trackIds, startIndex }) => playerClient.playTracks(trackIds, startIndex),
+  });
+  registerAction({
+    id: "player.playPlaylist",
+    label: "Play playlist",
+    run: ({ id, startIndex }) => playerClient.playPlaylist(id, startIndex),
+  });
+  registerAction({
+    id: "player.toggle",
+    label: "Play or pause",
+    shortcut: " ",
+    run: () => playerClient.control(player.status?.state === "playing" ? "pause" : "play"),
+  });
+  registerAction({ id: "player.stop", label: "Stop", run: () => playerClient.control("stop") });
+  registerAction({ id: "player.next", label: "Next", run: () => playerClient.control("next") });
+  registerAction({
+    id: "player.previous",
+    label: "Previous",
+    run: () => playerClient.control("previous"),
+  });
+  registerAction({ id: "player.seek", label: "Seek", run: ({ ms }) => playerClient.seek(ms) });
 }

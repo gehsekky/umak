@@ -8,4 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-umak-audio.workspace = true
+umak-audio = { workspace = true, features = ["engine"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

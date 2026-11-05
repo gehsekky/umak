@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
+umak-audio.workspace = true
 rusqlite = { version = "0.41", features = ["bundled"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }

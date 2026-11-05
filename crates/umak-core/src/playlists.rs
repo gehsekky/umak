@@ -8,6 +8,8 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use crate::api::{ApiError, ErrorCode};
+use umak_audio::protocol::TrackEntry;
+
 use crate::db::{DEFAULT_USER_ID, new_public_id};
 use crate::library::{MAX_PAGE, TRACK_COLUMNS, TrackRow};
 
@@ -263,6 +265,90 @@ pub fn move_items(
     }
     touch(conn, playlist, now)?;
     get(conn, playlist)
+}
+
+fn player_id(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.prepare_cached("SELECT id FROM playlists WHERE user_id = ?1 AND kind = 'player'")?
+        .query_row([DEFAULT_USER_ID], |row| row.get(0))
+}
+
+/// Replaces the player playlist with these tracks. Unknown tracks fail the whole change.
+pub fn set_player_tracks(conn: &Connection, track_ids: &[String]) -> Result<(), ApiError> {
+    let playlist = player_id(conn)?;
+    conn.prepare_cached("DELETE FROM playlist_items WHERE playlist_id = ?1")?
+        .execute([playlist])?;
+    let mut track_id = conn.prepare_cached("SELECT id FROM tracks WHERE public_id = ?1")?;
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO playlist_items (playlist_id, position, track_id) VALUES (?1, ?2, ?3)",
+    )?;
+    for (index, public_id) in track_ids.iter().enumerate() {
+        let track: i64 = track_id
+            .query_row([public_id], |row| row.get(0))
+            .optional()?
+            .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "that track no longer exists"))?;
+        insert.execute(params![playlist, (index as i64 + 1) * POSITION_GAP, track])?;
+    }
+    Ok(())
+}
+
+/// Replaces the player playlist with a copy of a saved playlist.
+pub fn copy_to_player(conn: &Connection, id: &str) -> Result<(), ApiError> {
+    let source = internal_id(conn, id)?;
+    let playlist = player_id(conn)?;
+    conn.prepare_cached("DELETE FROM playlist_items WHERE playlist_id = ?1")?
+        .execute([playlist])?;
+    conn.prepare_cached(
+        "INSERT INTO playlist_items (playlist_id, position, track_id)
+         SELECT ?1, position, track_id FROM playlist_items WHERE playlist_id = ?2",
+    )?
+    .execute([playlist, source])?;
+    Ok(())
+}
+
+/// The player playlist with each file's full path, for the engine. Paths stop here:
+/// everything above the player works with track IDs.
+pub fn player_entries(conn: &Connection) -> Result<Vec<TrackEntry>, ApiError> {
+    let playlist = player_id(conn)?;
+    Ok(conn
+        .prepare_cached(
+            "SELECT t.public_id, r.path, t.rel_path
+             FROM playlist_items i
+             JOIN tracks t ON t.id = i.track_id
+             JOIN library_roots r ON r.id = t.root_id
+             WHERE i.playlist_id = ?1 ORDER BY i.position",
+        )?
+        .query_map([playlist], |row| {
+            let root: String = row.get(1)?;
+            let rel_path: String = row.get(2)?;
+            Ok(TrackEntry {
+                id: row.get(0)?,
+                path: format!("{root}/{rel_path}"),
+            })
+        })?
+        .collect::<Result<_, _>>()?)
+}
+
+pub fn save_player_position(
+    conn: &Connection,
+    index: Option<u32>,
+    position_ms: u64,
+) -> Result<(), ApiError> {
+    let playlist = player_id(conn)?;
+    conn.prepare_cached(
+        "UPDATE playlists SET current_position = ?2, current_ms = ?3 WHERE id = ?1",
+    )?
+    .execute(params![playlist, index, position_ms as i64])?;
+    Ok(())
+}
+
+pub fn player_position(conn: &Connection) -> Result<(Option<u32>, u64), ApiError> {
+    let playlist = player_id(conn)?;
+    Ok(conn
+        .prepare_cached("SELECT current_position, current_ms FROM playlists WHERE id = ?1")?
+        .query_row([playlist], |row| {
+            let position_ms: Option<i64> = row.get(1)?;
+            Ok((row.get(0)?, position_ms.unwrap_or(0) as u64))
+        })?)
 }
 
 #[cfg(test)]

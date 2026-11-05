@@ -10,6 +10,7 @@
   import type { Snippet } from "svelte";
   import type { TrackRow } from "../api/generated/TrackRow";
   import { formatDuration, formatQuality } from "./format";
+  import { player } from "../player/state.svelte";
   import type { PagedList } from "./pagedList.svelte";
   import type { Selection } from "./selection.svelte";
   import VirtualList from "./VirtualList.svelte";
@@ -23,10 +24,12 @@
     label: string;
     sort?: SortState;
     onsort?: (sort: TrackSort) => void;
+    /** A row was double-clicked, or Enter was pressed on it. */
+    onactivate?: (row: R, index: number) => void;
     empty: Snippet;
   };
 
-  let { list, selection, track, number, label, sort, onsort, empty }: Props = $props();
+  let { list, selection, track, number, label, sort, onsort, onactivate, empty }: Props = $props();
 
   let virtual = $state<VirtualList<R>>();
   let start = $state(0);
@@ -94,6 +97,9 @@
       void list.keysInRange(0, list.total).then((keys) => selection.setRange(keys, cursor));
     } else if (event.key === "Escape") {
       selection.clear();
+    } else if (event.key === "Enter" && selection.cursor !== null) {
+      const row = list.row(selection.cursor);
+      if (row) onactivate?.(row, selection.cursor);
     }
   }
 
@@ -152,16 +158,20 @@
           class="row body"
           class:selected={selection.has(list.key(item))}
           class:missing={info.missing}
+          class:playing={player.playingTrackId === info.id}
           role="row"
           tabindex="-1"
           aria-rowindex={index + 1}
           aria-selected={selection.has(list.key(item))}
           onclick={(event) => click(event, index)}
+          ondblclick={() => onactivate?.(item, index)}
           onmousedown={(event) => {
             if (event.shiftKey) event.preventDefault();
           }}
         >
-          <div class="end muted" role="gridcell">{number(item, index)}</div>
+          <div class="end muted number" role="gridcell">
+            {player.playingTrackId === info.id ? "▶" : number(item, index)}
+          </div>
           <div role="gridcell" title={info.title}>
             {info.title}
             {#if info.missing}<span class="tag">Missing</span>{/if}
@@ -235,6 +245,10 @@
 
   .missing > div {
     color: var(--color-text-muted);
+  }
+
+  .playing > div {
+    color: var(--color-accent);
   }
 
   .end {
