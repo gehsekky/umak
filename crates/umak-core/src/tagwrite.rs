@@ -7,12 +7,15 @@
 //! the old values there. FLAC and MP4 tags go through the tag library.
 
 mod id3v2;
+mod snapshot;
 
 use std::collections::HashSet;
 use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io::{self, BufReader, Seek};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use lofty::ape::{ApeItem, ApeTag};
 use lofty::config::{ParseOptions, ParsingMode, WriteOptions};
@@ -31,11 +34,18 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::scan::fingerprint::audio_hash;
+use crate::scan::normalize::{artist_key, identity_key};
 use crate::scan::tags::{FileInfo, TrackTags, full_error, read_file};
+
+pub use snapshot::TagSnapshot;
 
 /// How far past a tag to look for the audio, as the scanner does.
 const MAX_JUNK_BYTES: usize = 1024 * 1024;
 const TEMP_SUFFIX: &str = ".umak-tmp";
+/// How long to keep trying to replace a file another program briefly holds, such as a virus
+/// scanner looking at the new copy.
+const REPLACE_ATTEMPTS: u32 = 10;
+const REPLACE_RETRY: Duration = Duration::from_millis(100);
 /// For the one kind of tag that holds a single value where the edit gives several.
 const SINGLE_VALUE_JOIN: &str = "/";
 /// How an APE tag separates several values.
@@ -74,6 +84,10 @@ pub enum TagWriteError {
     ReadOnly,
     #[error("the file changed while it was being edited, so nothing was written")]
     Changed,
+    #[error("the file's tags changed after the preview, so nothing was written")]
+    Stale,
+    #[error("another program has this file open, so nothing was written")]
+    InUse,
     #[error("the check after writing failed, so nothing was written: {0}")]
     Verification(String),
     #[error("{0}")]
@@ -102,6 +116,8 @@ fn parse_options(read_cover_art: bool) -> ParseOptions {
         .read_cover_art(read_cover_art)
         .max_junk_bytes(MAX_JUNK_BYTES)
         .parsing_mode(ParsingMode::Relaxed)
+        // Otherwise an older MP4 genre atom turns into a newer one on any save, edited or not.
+        .implicit_conversions(false)
 }
 
 fn format_error(error: &dyn std::error::Error) -> TagWriteError {
@@ -131,8 +147,9 @@ fn temp_path(path: &Path) -> Result<PathBuf, TagWriteError> {
     Ok(path.with_file_name(temp))
 }
 
-/// Checks the edits and tidies their values.
-fn clean_edits(edits: &[FieldEdit]) -> Result<Vec<FieldEdit>, TagWriteError> {
+/// Checks the edits and tidies their values. Values that name the same thing are kept once,
+/// as the reader would.
+pub fn clean_edits(edits: &[FieldEdit]) -> Result<Vec<FieldEdit>, TagWriteError> {
     let mut seen = HashSet::new();
     let mut cleaned = Vec::with_capacity(edits.len());
     for edit in edits {
@@ -147,7 +164,13 @@ fn clean_edits(edits: &[FieldEdit]) -> Result<Vec<FieldEdit>, TagWriteError> {
             .values
             .iter()
             .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty() && unique.insert(value.clone()))
+            .filter(|value| {
+                let key = match edit.field {
+                    TagField::Genres => identity_key(value),
+                    _ => artist_key(value),
+                };
+                !value.is_empty() && unique.insert(key)
+            })
             .collect();
         let is_list = matches!(
             edit.field,
@@ -159,20 +182,24 @@ fn clean_edits(edits: &[FieldEdit]) -> Result<Vec<FieldEdit>, TagWriteError> {
                 edit.field
             )));
         }
+        let mut values = values;
         if matches!(
             edit.field,
             TagField::Year | TagField::TrackNumber | TagField::DiscNumber
-        ) && let Some(value) = values.first()
+        ) && let Some(value) = values.first_mut()
         {
-            let valid = match edit.field {
-                TagField::Year => value.parse::<u16>().is_ok_and(|year| year > 0),
-                _ => value.parse::<u32>().is_ok_and(|number| number > 0),
+            let number = match edit.field {
+                TagField::Year => value.parse::<u16>().ok().map(u32::from),
+                _ => value.parse::<u32>().ok(),
             };
-            if !valid {
-                return Err(TagWriteError::Invalid(format!(
-                    "\"{value}\" is not a valid {:?}",
-                    edit.field
-                )));
+            match number {
+                Some(number) if number > 0 => *value = number.to_string(),
+                _ => {
+                    return Err(TagWriteError::Invalid(format!(
+                        "\"{value}\" is not a valid {:?}",
+                        edit.field
+                    )));
+                }
             }
         }
         cleaned.push(FieldEdit {
@@ -212,7 +239,7 @@ fn id3_frame_ids(field: TagField) -> &'static [&'static str] {
         TagField::AlbumArtists => &["TPE2"],
         TagField::Composers => &["TCOM"],
         TagField::Genres => &["TCON"],
-        TagField::Year => &["TDRC", "TYER", "TDAT", "TIME"],
+        TagField::Year => &["TDRC", "TYER", "TDAT", "TIME", "TRDA"],
         TagField::TrackNumber => &["TRCK"],
         TagField::DiscNumber => &["TPOS"],
     }
@@ -334,7 +361,7 @@ fn apply_ilst(tag: &mut Ilst, edit: &FieldEdit) {
     });
     if edit.field == TagField::Genres {
         // The older numeric form, which readers also look at.
-        tag.remove_genre();
+        tag.retain(|atom| !matches!(atom.ident(), AtomIdent::Fourcc(found) if found == b"gnre"));
     }
     // Whatever the case of the name, since readers ignore it.
     let names = list_field_names(edit.field);
@@ -388,13 +415,23 @@ fn open_rw(path: &Path) -> io::Result<File> {
     OpenOptions::new().read(true).write(true).open(path)
 }
 
-/// Makes the edits in the file at `path`, in the tag format it already has.
-fn apply_edits(path: &Path, kind: FileType, edits: &[FieldEdit]) -> Result<(), TagWriteError> {
+/// What to do to a file's tags.
+#[derive(Clone, Copy)]
+enum Change<'a> {
+    Edit(&'a [FieldEdit]),
+    Restore(&'a TagSnapshot),
+}
+
+/// Makes the change in the file at `path`, in the tag format it already has.
+fn apply_change(path: &Path, kind: FileType, change: Change<'_>) -> Result<(), TagWriteError> {
     let mut handle = open_rw(path)?;
     let options = parse_options(true);
     match kind {
         FileType::Mpeg => {
-            id3v2::edit_file(&mut handle, edits)?;
+            match change {
+                Change::Edit(edits) => id3v2::edit_file(&mut handle, edits)?,
+                Change::Restore(saved) => saved.restore_id3v2(&mut handle)?,
+            }
             handle.rewind()?;
             // The tags at the end of the file. Reading the ID3v2 tag again is not needed,
             // and leaving it out keeps the tag library from writing it.
@@ -402,12 +439,24 @@ fn apply_edits(path: &Path, kind: FileType, edits: &[FieldEdit]) -> Result<(), T
                 MpegFile::read_from(&mut handle, options).map_err(|error| format_error(&error))?;
             if file.id3v1().is_some() || file.ape().is_some() {
                 let _ = file.remove_id3v2();
-                for edit in edits {
-                    if let Some(tag) = file.id3v1_mut() {
-                        apply_id3v1(tag, edit);
+                match change {
+                    Change::Edit(edits) => {
+                        for edit in edits {
+                            if let Some(tag) = file.id3v1_mut() {
+                                apply_id3v1(tag, edit);
+                            }
+                            if let Some(tag) = file.ape_mut() {
+                                apply_ape(tag, edit)?;
+                            }
+                        }
                     }
-                    if let Some(tag) = file.ape_mut() {
-                        apply_ape(tag, edit)?;
+                    Change::Restore(saved) => {
+                        if let Some(tag) = file.id3v1_mut() {
+                            saved.restore_id3v1(tag);
+                        }
+                        if let Some(tag) = file.ape_mut() {
+                            saved.restore_ape(tag)?;
+                        }
                     }
                 }
                 handle.rewind()?;
@@ -422,7 +471,10 @@ fn apply_edits(path: &Path, kind: FileType, edits: &[FieldEdit]) -> Result<(), T
                 file.set_vorbis_comments(VorbisComments::new());
             }
             if let Some(tag) = file.vorbis_comments_mut() {
-                edits.iter().for_each(|edit| apply_vorbis(tag, edit));
+                match change {
+                    Change::Edit(edits) => edits.iter().for_each(|edit| apply_vorbis(tag, edit)),
+                    Change::Restore(saved) => saved.restore_vorbis(tag),
+                }
             }
             // An ID3 tag before the FLAC stream stays in the file as it is. The tag library
             // cannot write one, so it must not be asked to.
@@ -438,7 +490,10 @@ fn apply_edits(path: &Path, kind: FileType, edits: &[FieldEdit]) -> Result<(), T
                 file.set_ilst(Ilst::new());
             }
             if let Some(tag) = file.ilst_mut() {
-                edits.iter().for_each(|edit| apply_ilst(tag, edit));
+                match change {
+                    Change::Edit(edits) => edits.iter().for_each(|edit| apply_ilst(tag, edit)),
+                    Change::Restore(saved) => saved.restore_ilst(tag)?,
+                }
                 keep_one_byte_atoms(tag);
             }
             handle.rewind()?;
@@ -453,6 +508,25 @@ fn apply_edits(path: &Path, kind: FileType, edits: &[FieldEdit]) -> Result<(), T
     }
     handle.sync_all()?;
     Ok(())
+}
+
+/// Whether an edit of these fields replaces or removes this atom.
+fn is_edited_atom(ident: &AtomIdent<'_>, fields: &[TagField]) -> bool {
+    match ident {
+        AtomIdent::Fourcc(code) => fields.iter().any(|field| match field {
+            TagField::Title => code == b"\xa9nam",
+            TagField::Album => code == b"\xa9alb",
+            TagField::Year => code == b"\xa9day",
+            TagField::TrackNumber => code == b"trkn",
+            TagField::DiscNumber => code == b"disk",
+            TagField::Genres => code == b"\xa9gen" || code == b"gnre",
+            other => mp4_atom(*other).is_some_and(|atom| atom.eq_ignore_ascii_case(code)),
+        }),
+        AtomIdent::Freeform { name, .. } => fields
+            .iter()
+            .flat_map(|field| list_field_names(*field).iter())
+            .any(|list| list.eq_ignore_ascii_case(name)),
+    }
 }
 
 /// One item of a tag: a name and a hash of its whole content.
@@ -527,25 +601,10 @@ fn untouched_items(
         FileType::Mp4 => {
             let file =
                 Mp4File::read_from(&mut handle, options).map_err(|error| format_error(&error))?;
-            let is_edited = |ident: &AtomIdent<'_>| match ident {
-                AtomIdent::Fourcc(code) => edited.iter().any(|field| match field {
-                    TagField::Title => code == b"\xa9nam",
-                    TagField::Album => code == b"\xa9alb",
-                    TagField::Year => code == b"\xa9day",
-                    TagField::TrackNumber => code == b"trkn",
-                    TagField::DiscNumber => code == b"disk",
-                    TagField::Genres => code == b"\xa9gen" || code == b"gnre",
-                    other => mp4_atom(*other).is_some_and(|atom| atom.eq_ignore_ascii_case(code)),
-                }),
-                AtomIdent::Freeform { name, .. } => edited
-                    .iter()
-                    .flat_map(|field| list_field_names(*field).iter())
-                    .any(|list| list.eq_ignore_ascii_case(name)),
-            };
             file.ilst()
                 .map(|tag| {
                     tag.into_iter()
-                        .filter(|atom| !is_edited(atom.ident()))
+                        .filter(|atom| !is_edited_atom(atom.ident(), edited))
                         .map(|atom| item(format!("{:?}", atom.ident()), &format!("{atom:?}")))
                         .collect()
                 })
@@ -683,8 +742,19 @@ fn verify(
     Ok(())
 }
 
+/// Whether an error means another program holds the file, which may soon pass.
+fn is_in_use(error: &io::Error) -> bool {
+    const ACCESS_DENIED: i32 = 5;
+    const SHARING_VIOLATION: i32 = 32;
+    cfg!(windows)
+        && matches!(
+            error.raw_os_error(),
+            Some(ACCESS_DENIED | SHARING_VIOLATION)
+        )
+}
+
 /// Replaces the original with the checked copy, keeping when the file was created.
-fn replace(original: &Path, temp: &Path) -> io::Result<()> {
+fn replace(original: &Path, temp: &Path) -> Result<(), TagWriteError> {
     let created = fs::metadata(original)?.created().ok();
     let handle = OpenOptions::new().write(true).open(temp)?;
     if let Some(created) = created {
@@ -698,21 +768,105 @@ fn replace(original: &Path, temp: &Path) -> io::Result<()> {
     }
     handle.sync_all()?;
     drop(handle);
-    fs::rename(temp, original)
+    let mut attempts = 1;
+    loop {
+        match fs::rename(temp, original) {
+            Ok(()) => return Ok(()),
+            Err(error) if is_in_use(&error) => {
+                if attempts == REPLACE_ATTEMPTS {
+                    return Err(TagWriteError::InUse);
+                }
+                attempts += 1;
+                thread::sleep(REPLACE_RETRY);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 /// Writes the edits to a file. On any error the file is exactly as it was.
 pub fn write_tags(path: &Path, edits: &[FieldEdit]) -> Result<(), TagWriteError> {
-    write_with(path, edits, |_| {})
+    let edits = clean_edits(edits)?;
+    write_with(path, &edits, Change::Edit(&edits), None, |_| {})
 }
 
-/// `before_verifying` lets a test interfere between the edit and the check.
-fn write_with(
+/// Writes edits worked out in a preview, as long as what they replace is what the preview saw.
+pub fn write_previewed(
     path: &Path,
     edits: &[FieldEdit],
-    before_verifying: impl FnOnce(&Path),
+    seen: &TagSnapshot,
 ) -> Result<(), TagWriteError> {
     let edits = clean_edits(edits)?;
+    write_with(path, &edits, Change::Edit(&edits), Some(seen), |_| {})
+}
+
+/// Puts back what a snapshot saved, as long as what it replaces is what the preview saw.
+/// `expected` is what the fields should then read as.
+pub fn restore_tags(
+    path: &Path,
+    saved: &TagSnapshot,
+    expected: &[FieldEdit],
+    seen: &TagSnapshot,
+) -> Result<(), TagWriteError> {
+    write_with(path, expected, Change::Restore(saved), Some(seen), |_| {})
+}
+
+/// Saves what an edit of these fields would replace. A file that cannot be written fails here,
+/// so a preview can say so before anything is attempted.
+pub fn snapshot_tags(path: &Path, fields: &[TagField]) -> Result<TagSnapshot, TagWriteError> {
+    if fs::metadata(path)?.permissions().readonly() {
+        return Err(TagWriteError::ReadOnly);
+    }
+    let Some(kind) = file_type(path)? else {
+        return Err(TagWriteError::Unsupported(
+            "this file's format was not recognized".to_owned(),
+        ));
+    };
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        TagSnapshot::capture(path, kind, fields)
+    }))
+    .map_err(|_| TagWriteError::Format("the tag library failed on this file".to_owned()))?
+}
+
+/// Reads a file's tags as they stand. The tag library has panicked on damaged files.
+pub fn read_tags(path: &Path) -> Result<TrackTags, TagWriteError> {
+    panic::catch_unwind(AssertUnwindSafe(|| read_back(path)))
+        .map_err(|_| TagWriteError::Format("the tag library failed on this file".to_owned()))?
+        .map(|info| info.tags)
+}
+
+/// What a field holds in the tag model, in the form edits give it.
+pub fn field_values(tags: &TrackTags, field: TagField) -> Vec<String> {
+    let number = |value: Option<u32>| value.iter().map(u32::to_string).collect();
+    match field {
+        TagField::Title => tags.title.iter().cloned().collect(),
+        TagField::Album => tags.album.iter().cloned().collect(),
+        TagField::Artists => tags.artists.clone(),
+        TagField::AlbumArtists => tags.album_artists.clone(),
+        TagField::Composers => tags.composers.clone(),
+        TagField::Genres => tags.genres.clone(),
+        TagField::Year => tags.year.iter().map(i64::to_string).collect(),
+        TagField::TrackNumber => number(tags.track_no),
+        TagField::DiscNumber => number(tags.disc_no),
+    }
+}
+
+/// Removes what a write that never finished may have left beside a file.
+pub fn remove_leftover(path: &Path) {
+    if let Ok(temp) = temp_path(path) {
+        let _ = fs::remove_file(temp);
+    }
+}
+
+/// `before_verifying` lets a test interfere between the edit and the check. `expected` is what
+/// the edited fields should read as afterwards.
+fn write_with(
+    path: &Path,
+    expected: &[FieldEdit],
+    change: Change<'_>,
+    seen: Option<&TagSnapshot>,
+    before_verifying: impl FnOnce(&Path),
+) -> Result<(), TagWriteError> {
     if fs::metadata(path)?.permissions().readonly() {
         return Err(TagWriteError::ReadOnly);
     }
@@ -722,6 +876,12 @@ fn write_with(
         ));
     };
     let started = stamp(path)?;
+    if let Some(seen) = seen {
+        let fields: Vec<TagField> = expected.iter().map(|edit| edit.field).collect();
+        if snapshot_tags(path, &fields)? != *seen {
+            return Err(TagWriteError::Stale);
+        }
+    }
 
     let temp_file = temp_path(path)?;
     let mut temp = TempFile {
@@ -731,9 +891,9 @@ fn write_with(
     fs::copy(path, &temp_file)?;
     // The tag library has panicked on damaged files, which must not take the app down.
     panic::catch_unwind(AssertUnwindSafe(|| {
-        apply_edits(&temp_file, kind, &edits)?;
+        apply_change(&temp_file, kind, change)?;
         before_verifying(&temp_file);
-        verify(path, &temp_file, kind, &edits)
+        verify(path, &temp_file, kind, expected)
     }))
     .map_err(|_| TagWriteError::Format("the tag library failed on this file".to_owned()))??;
 
@@ -886,6 +1046,11 @@ mod tests {
             field,
             values: values.iter().map(|value| (*value).to_owned()).collect(),
         }
+    }
+
+    fn write_title_with(path: &Path, hook: impl FnOnce(&Path)) -> Result<(), TagWriteError> {
+        let edits = [edit(TagField::Title, &["New"])];
+        write_with(path, &edits, Change::Edit(&edits), None, hook)
     }
 
     fn tags_of(path: &Path) -> TrackTags {
@@ -1067,6 +1232,113 @@ mod tests {
     }
 
     #[test]
+    fn a_restore_brings_back_the_exact_frames_and_the_side_tags() {
+        let dated = [
+            0, b'2', b'0', b'0', b'1', b'-', b'0', b'5', b'-', b'0', b'3',
+        ];
+        let tag = id3_tag(
+            4,
+            &[
+                ("TIT2", latin1("Old")),
+                ("TDRC", dated.to_vec()),
+                ("TRCK", latin1("03/12")),
+                ("TXXX", user_text("ARTISTS", "One")),
+                ("TPE1", latin1("One")),
+                ("WXXX", vec![0, 0, b'h', b't', b't', b'p']),
+            ],
+        );
+        let bytes = [tag, mpeg_audio(), id3v1("Old")].concat();
+        let file = fixture("a.mp3", &bytes);
+        let fields = [
+            TagField::Title,
+            TagField::Year,
+            TagField::TrackNumber,
+            TagField::Artists,
+        ];
+        let saved = snapshot_tags(&file.path, &fields).unwrap();
+        let tags_before = tags_of(&file.path);
+
+        let edits = [
+            edit(TagField::Title, &["New"]),
+            edit(TagField::Year, &["1999"]),
+            edit(TagField::TrackNumber, &["7"]),
+            edit(TagField::Artists, &["Two", "Three"]),
+        ];
+        write_previewed(&file.path, &edits, &saved).unwrap();
+        assert_eq!(tags_of(&file.path).title.as_deref(), Some("New"));
+
+        let seen = snapshot_tags(&file.path, &fields).unwrap();
+        let expected: Vec<FieldEdit> = fields
+            .iter()
+            .map(|field| FieldEdit {
+                field: *field,
+                values: field_values(&tags_before, *field),
+            })
+            .collect();
+        restore_tags(&file.path, &saved, &expected, &seen).unwrap();
+
+        assert_eq!(tags_of(&file.path), tags_before);
+        assert_eq!(snapshot_tags(&file.path, &fields).unwrap(), saved);
+        let after = fs::read(&file.path).unwrap();
+        assert!(after.windows(10).any(|bytes| bytes == b"2001-05-03"));
+        assert!(after.windows(5).any(|bytes| bytes == b"03/12"));
+    }
+
+    #[test]
+    fn a_write_is_refused_when_the_tags_are_not_what_the_preview_saw() {
+        let tag = id3_tag(3, &[("TIT2", latin1("Old"))]);
+        let file = fixture("a.mp3", &[tag, mpeg_audio()].concat());
+        let seen = snapshot_tags(&file.path, &[TagField::Title]).unwrap();
+        write_tags(&file.path, &[edit(TagField::Title, &["Other"])]).unwrap();
+        let before = fs::read(&file.path).unwrap();
+
+        let error = write_previewed(&file.path, &[edit(TagField::Title, &["New"])], &seen);
+        assert!(matches!(error, Err(TagWriteError::Stale)));
+        assert_eq!(fs::read(&file.path).unwrap(), before);
+    }
+
+    #[cfg(feature = "engine")]
+    #[test]
+    fn a_file_being_played_can_be_replaced_and_keeps_playing_as_it_was() {
+        use umak_audio::source::{AudioSource, LocalFile};
+
+        let tag = id3_tag(3, &[("TIT2", latin1("Old"))]);
+        let bytes = [tag, mpeg_audio()].concat();
+        let file = fixture("a.mp3", &bytes);
+        let mut playing = LocalFile(file.path.clone()).open().unwrap();
+
+        // Long enough that the tag has to grow and the file's bytes all differ.
+        let long = "L".repeat(4000);
+        write_tags(&file.path, &[edit(TagField::Title, &[&long])]).unwrap();
+        assert_eq!(tags_of(&file.path).title.as_deref(), Some(long.as_str()));
+
+        let mut read = Vec::new();
+        playing.read_to_end(&mut read).unwrap();
+        assert_eq!(read, bytes);
+    }
+
+    #[test]
+    fn editing_an_mp4_genre_removes_the_older_numeric_form_too() {
+        let mut tag = Ilst::new();
+        tag.insert(Atom::new(
+            AtomIdent::Fourcc(*b"gnre"),
+            AtomData::Unknown {
+                code: DataType::Reserved,
+                data: vec![0, 8],
+            },
+        ));
+        apply_ilst(&mut tag, &edit(TagField::Genres, &["Jazz"]));
+        let atoms: Vec<_> = (&tag).into_iter().map(Atom::ident).collect();
+        assert_eq!(atoms, [&AtomIdent::Fourcc(*b"\xa9gen")]);
+    }
+
+    #[test]
+    fn values_naming_the_same_thing_are_kept_once() {
+        let cleaned = clean_edits(&[edit(TagField::Genres, &["Rock", "ROCK", " Pop "])]).unwrap();
+        assert_eq!(cleaned[0].values, ["Rock", "Pop"]);
+    }
+
+    #[test]
     fn a_file_with_no_tag_gets_one() {
         let file = fixture("a.mp3", &mpeg_audio());
         write_tags(&file.path, &[edit(TagField::Title, &["New"])]).unwrap();
@@ -1201,7 +1473,7 @@ mod tests {
     fn a_failed_check_leaves_the_original_untouched() {
         let bytes = mp3_v23();
         let file = fixture("a.mp3", &bytes);
-        let error = write_with(&file.path, &[edit(TagField::Title, &["New"])], |temp| {
+        let error = write_title_with(&file.path, |temp| {
             // Damage a byte of the copy's audio, as a bad write could.
             let mut copy = fs::read(temp).unwrap();
             let last = copy.len() - 1;
@@ -1218,7 +1490,7 @@ mod tests {
     fn a_lost_frame_fails_the_check() {
         let bytes = mp3_v23();
         let file = fixture("a.mp3", &bytes);
-        let error = write_with(&file.path, &[edit(TagField::Title, &["New"])], |temp| {
+        let error = write_title_with(&file.path, |temp| {
             let mut handle = open_rw(temp).unwrap();
             let mut copy = MpegFile::read_from(&mut handle, parse_options(true)).unwrap();
             let _ = copy
@@ -1238,7 +1510,7 @@ mod tests {
     fn a_file_that_changes_meanwhile_is_not_overwritten() {
         let file = fixture("a.mp3", &mp3_v23());
         let original = file.path.clone();
-        let error = write_with(&file.path, &[edit(TagField::Title, &["New"])], |_| {
+        let error = write_title_with(&file.path, |_| {
             // Another program saves the file during the edit.
             let mut bytes = fs::read(&original).unwrap();
             bytes.extend([0; 16]);

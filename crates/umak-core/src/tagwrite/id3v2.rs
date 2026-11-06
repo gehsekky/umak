@@ -6,7 +6,8 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
-use super::{FieldEdit, TagField, TagWriteError, list_field_names};
+use super::snapshot::SavedFrame;
+use super::{FieldEdit, TagField, TagWriteError, id3_frame_ids, list_field_names};
 
 const HEADER_LEN: usize = 10;
 const FRAME_HEADER_LEN: usize = 10;
@@ -277,15 +278,24 @@ fn zeros_after(file: &mut File, from: u64) -> io::Result<u64> {
     }
 }
 
-/// Applies the edits to the tag at the start of the file, making one if there is none.
-pub fn edit_file(file: &mut File, edits: &[FieldEdit]) -> Result<(), TagWriteError> {
+/// The tag at the start of a file, as far as editing needs it.
+struct ParsedTag {
+    exists: bool,
+    version: u8,
+    flags: u8,
+    size: usize,
+    frames: Vec<RawFrame>,
+}
+
+/// Reads the tag at the start of the file. No tag reads as an empty one of version 2.3.
+fn read_tag(file: &mut File) -> Result<ParsedTag, TagWriteError> {
     let damaged =
         || TagWriteError::Unsupported("this file's ID3v2 tag could not be read".to_owned());
 
     let mut header = [0; HEADER_LEN];
     file.seek(SeekFrom::Start(0))?;
     let has_tag = file.read_exact(&mut header).is_ok() && &header[..3] == b"ID3";
-    let (version, flags, mut old_size, mut frames) = if has_tag {
+    let (version, flags, size, frames) = if has_tag {
         let (version, flags) = (header[3], header[5]);
         if version != 3 && version != 4 {
             return Err(TagWriteError::Unsupported(format!(
@@ -333,11 +343,90 @@ pub fn edit_file(file: &mut File, edits: &[FieldEdit]) -> Result<(), TagWriteErr
     } else {
         (3, 0, 0, Vec::new())
     };
+    Ok(ParsedTag {
+        exists: has_tag,
+        version,
+        flags,
+        size,
+        frames,
+    })
+}
 
+/// Whether an edit of these fields replaces or removes this frame.
+fn is_edited(frame: &RawFrame, fields: &[TagField]) -> bool {
+    let Ok(id) = std::str::from_utf8(&frame.id) else {
+        return false;
+    };
+    fields.iter().any(|field| {
+        id3_frame_ids(*field).contains(&id)
+            || (id == "TXXX"
+                && user_text_name(frame).is_some_and(|name| {
+                    list_field_names(*field)
+                        .iter()
+                        .any(|list| list.eq_ignore_ascii_case(&name))
+                }))
+    })
+}
+
+/// The frames an edit of these fields would replace, exactly as they are.
+pub fn saved_frames(
+    file: &mut File,
+    fields: &[TagField],
+) -> Result<Vec<SavedFrame>, TagWriteError> {
+    Ok(read_tag(file)?
+        .frames
+        .into_iter()
+        .filter(|frame| is_edited(frame, fields))
+        .map(|frame| SavedFrame {
+            id: frame.id,
+            flags: frame.flags,
+            body: frame.body,
+        })
+        .collect())
+}
+
+/// Puts saved frames back in place of whatever now holds these fields.
+pub fn restore_file(
+    file: &mut File,
+    fields: &[TagField],
+    saved: &[SavedFrame],
+) -> Result<(), TagWriteError> {
+    let mut tag = read_tag(file)?;
+    let at = tag
+        .frames
+        .iter()
+        .position(|frame| is_edited(frame, fields))
+        .unwrap_or(tag.frames.len());
+    tag.frames.retain(|frame| !is_edited(frame, fields));
+    let at = at.min(tag.frames.len());
+    tag.frames.splice(
+        at..at,
+        saved.iter().map(|frame| RawFrame {
+            id: frame.id,
+            flags: frame.flags,
+            body: frame.body.clone(),
+        }),
+    );
+    write_tag(file, tag)
+}
+
+/// Applies the edits to the tag at the start of the file, making one if there is none.
+pub fn edit_file(file: &mut File, edits: &[FieldEdit]) -> Result<(), TagWriteError> {
+    let mut tag = read_tag(file)?;
     for edit in edits {
-        apply_edit(&mut frames, edit, version);
+        apply_edit(&mut tag.frames, edit, tag.version);
     }
+    write_tag(file, tag)
+}
 
+fn write_tag(file: &mut File, tag: ParsedTag) -> Result<(), TagWriteError> {
+    let ParsedTag {
+        exists: has_tag,
+        version,
+        flags,
+        size: mut old_size,
+        frames,
+    } = tag;
     if has_tag {
         old_size += zeros_after(file, (HEADER_LEN + old_size) as u64)? as usize;
     }

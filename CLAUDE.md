@@ -45,7 +45,7 @@ Run from the repository root:
 - `cargo run -p umak-play -- <file>...`: play files. With no files it takes JSON commands on stdin. `--volume N` sets the gain, `--null-output` makes no sound, and `--check <file>...` decodes files without playing them.
 - `UMAK_JOIN_FILES="a;b;c" cargo test --release -p umak-audio --test engine report_on_real_joins -- --ignored --nocapture`: measure the joins between real files.
 - `cargo test -p umak-core --features engine`: include the tests of the engine inside the core. `cargo test --workspace` already includes them, because the app turns the feature on.
-- `UMAK_TAG_CORPUS=<folder> cargo test --release -p umak-core --test tag_corpus -- --ignored --nocapture`: write tags to real files to find what fixtures cannot. It changes the files, so it needs a folder of copies holding a `.umak-tag-corpus` file.
+- `UMAK_TAG_CORPUS=<folder> cargo test --release -p umak-core --test tag_corpus -- --ignored --nocapture`: write tags to real files and undo them, to find what fixtures cannot. It changes the files, so it needs a folder of copies holding a `.umak-tag-corpus` file.
 - `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio`.
 
 Run from `app/` (run `npm install` first):

@@ -14,6 +14,7 @@ use rusqlite::{Connection, OpenFlags};
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_scanner.sql"),
+    include_str!("../migrations/0003_tag_edits.sql"),
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);

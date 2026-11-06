@@ -377,6 +377,31 @@ impl Shared {
             .flatten()
     }
 
+    /// Reads the current track's details again, in case they changed.
+    fn refresh_track(&self) {
+        let Some(current) = self.status_snapshot().track else {
+            return;
+        };
+        let Some(track) = self.track_row(&current.id) else {
+            return;
+        };
+        if track == current {
+            return;
+        }
+        let status = {
+            let mut status = lock(&self.status);
+            // The engine may have moved on while this was being read.
+            if status.track.as_ref().is_none_or(|now| now.id != track.id) {
+                return;
+            }
+            status.track = Some(track);
+            status.clone()
+        };
+        self.events.emit(&CoreEvent::PlayerChanged {
+            status: Box::new(status),
+        });
+    }
+
     fn save_position(&self, index: Option<u32>, position_ms: u64) {
         *lock(&self.saved_position_ms) = position_ms;
         let saved = self.db.write(|conn| {
@@ -520,6 +545,13 @@ impl Player {
 
     pub fn status(&self) -> PlayerStatus {
         lock(&self.shared.status).clone()
+    }
+
+    /// Something a background job can call when tracks have changed, so that the details shown
+    /// for the current track do not go stale.
+    pub fn track_refresher(&self) -> impl Fn() + Send + 'static + use<> {
+        let shared = Arc::clone(&self.shared);
+        move || shared.refresh_track()
     }
 
     fn failure(message: String) -> ApiError {
@@ -1162,6 +1194,46 @@ mod tests {
                 PlayerCommand::Seek { ms: 1500 },
             ]
         );
+    }
+
+    #[test]
+    fn the_current_track_shows_new_details_after_its_tags_change() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        fixture.signal(state(PlaybackState::Playing, 0, "a", 250));
+        let refresh = fixture.player.track_refresher();
+        refresh();
+        let events = |fixture: &Fixture| {
+            fixture
+                .events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, CoreEvent::PlayerChanged { .. }))
+                .count()
+        };
+        let before = events(&fixture);
+        refresh();
+        assert_eq!(
+            events(&fixture),
+            before,
+            "nothing changed, so nothing to say"
+        );
+
+        fixture
+            .player
+            .shared
+            .db
+            .write(|conn| {
+                conn.execute("UPDATE tracks SET title = 'New' WHERE public_id = 'a'", [])?;
+                Ok::<_, DbError>(())
+            })
+            .unwrap();
+        refresh();
+        assert_eq!(fixture.player.status().track.unwrap().title, "New");
+        assert_eq!(fixture.player.status().position_ms, 250);
+        assert_eq!(events(&fixture), before + 1);
     }
 
     #[test]

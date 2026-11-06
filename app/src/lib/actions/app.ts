@@ -62,7 +62,7 @@ export function registerAppActions(): void {
   });
   registerAction({
     id: "library.cancelScan",
-    label: "Cancel scan",
+    label: "Cancel",
     run: async () => {
       if (app.scan) await call("jobs.cancel", { id: app.scan.id });
     },

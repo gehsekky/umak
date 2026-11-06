@@ -12,6 +12,13 @@
     }
   });
 
+  const JOB_LABELS: Record<string, string> = {
+    scan: "Scanning",
+    import: "Importing",
+    tagPreview: "Reading tags",
+    tagWrite: "Writing tags",
+  };
+
   const percent = $derived(
     app.scan && app.scan.total > 0 ? Math.floor((app.scan.done * 100) / app.scan.total) : 0,
   );
@@ -20,7 +27,7 @@
 <div class="bar" role="status">
   {#if app.scan}
     <span>
-      {app.scan.kind === "import" ? "Importing" : "Scanning"}:
+      {JOB_LABELS[app.scan.kind]}:
       {app.scan.done.toLocaleString()} of {app.scan.total.toLocaleString()} files
     </span>
     <span class="meter" aria-hidden="true"><span class="fill" style:width="{percent}%"></span></span>

@@ -25,6 +25,8 @@ const LISTED_JOBS: i64 = 50;
 pub enum JobKind {
     Scan,
     Import,
+    TagPreview,
+    TagWrite,
 }
 
 impl JobKind {
@@ -32,6 +34,17 @@ impl JobKind {
         match self {
             Self::Scan => "scan",
             Self::Import => "import",
+            Self::TagPreview => "tagPreview",
+            Self::TagWrite => "tagWrite",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Scan => "scan",
+            Self::Import => "import",
+            Self::TagPreview => "tag preview",
+            Self::TagWrite => "tag write",
         }
     }
 }
@@ -141,7 +154,7 @@ impl JobRunner {
             if let Some(job) = running.values().next() {
                 return Err(ApiError {
                     code: ErrorCode::Conflict,
-                    message: format!("a {} job is already running", job.kind.as_str()),
+                    message: format!("a {} job is already running", job.kind.label()),
                 });
             }
             self.db.write(|conn| insert_job(conn, &id, kind))?;

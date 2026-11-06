@@ -115,6 +115,16 @@ class AppState {
     }
   }
 
+  /** The tag editor reads a batch's results itself; only the shared progress ends here. */
+  private async finishTagJob(id: string): Promise<void> {
+    this.scan = null;
+    this.libraryVersion++;
+    const job = (await call("jobs.list", {})).jobs.find((candidate) => candidate.id === id);
+    if (job?.status === "failed") {
+      this.fail(`Tag editing failed: ${job.error ?? "unknown error"}`);
+    }
+  }
+
   private handle(event: CoreEvent): void {
     switch (event.type) {
       case "libraryRootsChanged":
@@ -133,7 +143,8 @@ class AppState {
         break;
       case "jobFinished":
         if (event.kind === "scan") void this.finishScan(event.id);
-        else void this.finishImport(event.id);
+        else if (event.kind === "import") void this.finishImport(event.id);
+        else void this.finishTagJob(event.id);
         break;
     }
   }

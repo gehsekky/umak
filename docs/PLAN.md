@@ -186,7 +186,8 @@ The scanner assigns each track to an album using the first rule that applies. Gr
 - Write safely: temp file, verify, then replace, so a crash cannot corrupt a file. The check reads the edited copy back: the edited fields must hold the new values, every other tag item must be unchanged, and a hash of the whole audio must match.
 - ID3v2 tags are edited frame by frame, so frames that are not being edited keep their exact bytes. The tag library is not used for this, because when writing ID3v2.3 it discards frames such as TSOP and TSOT and writes URL frames in the wrong encoding. It still reads all formats and writes FLAC and MP4.
 - An ID3v1 or APE tag beside the main tag is kept in step, so another player does not find the old values there.
-- Undo history for tag changes.
+- Undo history for tag changes. What a write replaces is saved exactly as the file held it, not through the tag model, which would turn "2001-05-03" into 2001 and lose the rest. An undo is a batch like any other, with its own preview, and leaves alone any file changed since.
+- A write goes ahead only if what it replaces is what the preview saw.
 
 **Cleanup tools**
 

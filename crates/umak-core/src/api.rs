@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
 use serde::de::DeserializeOwned;
@@ -25,6 +25,7 @@ use crate::player::{
 };
 use crate::playlists::{self, Playlist, PlaylistPage};
 use crate::scan::{self, ScanError, ScanOptions};
+use crate::tagedit::{self, TagEdit, TagEditItemPage, TagEditPage, TrackEdits};
 use crate::transfer::{self, ExportSummary, ImportPreview, RootChoice};
 use crate::{AppInfo, app_info};
 
@@ -113,6 +114,8 @@ pub enum CoreEvent {
         done: u64,
         total: u64,
     },
+    /// A batch of tag changes was added to the history or changed in it.
+    TagEditsChanged,
     /// The job's final state and result are available from `jobs.list`.
     JobFinished {
         id: String,
@@ -148,6 +151,7 @@ impl Core {
         let db = Arc::new(db);
         let events: Arc<dyn EventSink> = Arc::from(events);
         let jobs = JobRunner::new(Arc::clone(&db), Arc::clone(&events))?;
+        tagedit::recover_interrupted(&db)?;
         let player = Player::new(Arc::clone(&db), Arc::clone(&events), backend);
         Ok(Self {
             db,
@@ -155,6 +159,13 @@ impl Core {
             jobs,
             player,
         })
+    }
+}
+
+#[cfg(test)]
+impl Core {
+    pub(crate) fn database(&self) -> Arc<Database> {
+        Arc::clone(&self.db)
     }
 }
 
@@ -236,6 +247,13 @@ commands![
     ExportLibrary,
     PreviewImport,
     StartImport,
+    StartTagPreview,
+    GetTagEdit,
+    GetTagEditItems,
+    ListTagEdits,
+    WriteTagEdit,
+    DiscardTagEdit,
+    UndoTagEdit,
 ];
 
 #[derive(Debug, Deserialize, TS)]
@@ -900,6 +918,213 @@ impl Command for StartImport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 pub struct JobRef {
     pub id: String,
+}
+
+/// How often a tag job reports while it works.
+const TAG_JOB_REPORT: Duration = Duration::from_millis(100);
+/// How often a tag write tells views to reload.
+const TAG_JOB_LIBRARY_REPORT: Duration = Duration::from_millis(500);
+
+/// A batch of tag changes and the job working on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TagEditJob {
+    pub edit_id: String,
+    pub job_id: String,
+}
+
+fn start_tag_preview(
+    core: &Core,
+    undoes: Option<String>,
+    targets: Vec<tagedit::Target>,
+) -> Result<TagEditJob, ApiError> {
+    let db = Arc::clone(&core.db);
+    let edit_id = new_public_id();
+    let id = edit_id.clone();
+    let job_id = core.jobs.start(JobKind::TagPreview, move |context| {
+        let mut last_report = Instant::now();
+        let canceled = tagedit::preview(
+            &db,
+            &id,
+            undoes.as_deref(),
+            &targets,
+            context.cancel_flag(),
+            &mut |done, total| {
+                if done == total || last_report.elapsed() >= TAG_JOB_REPORT {
+                    last_report = Instant::now();
+                    context.progress(done, total);
+                }
+            },
+        )
+        .map_err(|error| error.message)?;
+        Ok(JobOutcome {
+            canceled,
+            scan: None,
+            import: None,
+        })
+    })?;
+    Ok(TagEditJob { edit_id, job_id })
+}
+
+/// Works out what tag changes would do, reading the files but not changing them. When the job
+/// finishes, the batch can be looked through and written, or discarded.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct StartTagPreview {
+    pub changes: Vec<TrackEdits>,
+}
+
+impl Command for StartTagPreview {
+    const NAME: &'static str = "tags.preview.start";
+    type Output = TagEditJob;
+
+    fn run(self, core: &Core) -> Result<TagEditJob, ApiError> {
+        let targets = core
+            .db
+            .read(|conn| tagedit::edit_targets(conn, &self.changes))?;
+        start_tag_preview(core, None, targets)
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetTagEdit {
+    pub id: String,
+}
+
+impl Command for GetTagEdit {
+    const NAME: &'static str = "tags.edits.get";
+    type Output = TagEdit;
+
+    fn run(self, core: &Core) -> Result<TagEdit, ApiError> {
+        core.db.read(|conn| tagedit::get(conn, &self.id))
+    }
+}
+
+/// A page of a batch's files and what changes in each.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetTagEditItems {
+    pub id: String,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Command for GetTagEditItems {
+    const NAME: &'static str = "tags.edits.items";
+    type Output = TagEditItemPage;
+
+    fn run(self, core: &Core) -> Result<TagEditItemPage, ApiError> {
+        core.db
+            .read(|conn| tagedit::items(conn, &self.id, self.offset, self.limit))
+    }
+}
+
+/// The history of written batches, newest first.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListTagEdits {
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Command for ListTagEdits {
+    const NAME: &'static str = "tags.edits.list";
+    type Output = TagEditPage;
+
+    fn run(self, core: &Core) -> Result<TagEditPage, ApiError> {
+        core.db
+            .read(|conn| tagedit::history(conn, self.offset, self.limit))
+    }
+}
+
+/// Writes a previewed batch in the background. Canceling stops it between files.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct WriteTagEdit {
+    pub id: String,
+}
+
+impl Command for WriteTagEdit {
+    const NAME: &'static str = "tags.edits.write";
+    type Output = JobRef;
+
+    fn run(self, core: &Core) -> Result<JobRef, ApiError> {
+        // A batch not waiting is refused here too, so the caller hears of it directly.
+        let status = core.db.read(|conn| tagedit::get(conn, &self.id))?.status;
+        if status != "ready" {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "this edit is not waiting to be written",
+            ));
+        }
+        let db = Arc::clone(&core.db);
+        let events = Arc::clone(&core.events);
+        let refresh_player = core.player.track_refresher();
+        let id = core.jobs.start(JobKind::TagWrite, move |context| {
+            let library_changed = || {
+                events.emit(&CoreEvent::LibraryChanged);
+                refresh_player();
+            };
+            let mut last_report = Instant::now();
+            let mut last_library = Instant::now();
+            let canceled =
+                tagedit::write(&db, &self.id, context.cancel_flag(), &mut |done, total| {
+                    if done == total || last_report.elapsed() >= TAG_JOB_REPORT {
+                        last_report = Instant::now();
+                        context.progress(done, total);
+                    }
+                    if done > 0 && last_library.elapsed() >= TAG_JOB_LIBRARY_REPORT {
+                        last_library = Instant::now();
+                        library_changed();
+                    }
+                });
+            library_changed();
+            events.emit(&CoreEvent::TagEditsChanged);
+            Ok(JobOutcome {
+                canceled: canceled.map_err(|error| error.message)?,
+                scan: None,
+                import: None,
+            })
+        })?;
+        Ok(JobRef { id })
+    }
+}
+
+/// Throws away a previewed batch.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DiscardTagEdit {
+    pub id: String,
+}
+
+impl Command for DiscardTagEdit {
+    const NAME: &'static str = "tags.edits.discard";
+    type Output = Deleted;
+
+    fn run(self, core: &Core) -> Result<Deleted, ApiError> {
+        core.db.read(|conn| tagedit::get(conn, &self.id))?;
+        core.db.write(|conn| tagedit::discard(conn, &self.id))?;
+        Ok(Deleted { id: self.id })
+    }
+}
+
+/// Starts a preview of undoing a written batch. Files changed since are left out, each with
+/// the reason. The result is a batch like any other, to be written or discarded.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct UndoTagEdit {
+    pub id: String,
+}
+
+impl Command for UndoTagEdit {
+    const NAME: &'static str = "tags.edits.undo";
+    type Output = TagEditJob;
+
+    fn run(self, core: &Core) -> Result<TagEditJob, ApiError> {
+        let targets = core.db.read(|conn| tagedit::undo_targets(conn, &self.id))?;
+        start_tag_preview(core, Some(self.id), targets)
+    }
 }
 
 /// Starts scanning in the background and returns at once. Progress arrives as events.
