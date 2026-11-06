@@ -43,6 +43,7 @@ Run from the repository root:
 - `cargo run -p umak-scan -- <database> [folder]... [--threads N] [--samples N] [--no-scan] [--list N] [--json]`: scan folders into a database and print statistics, including album grouping and tagging problems. Keep test databases outside the repository.
 - `cargo run --release -p umak-scan -- bench <database>`: time queries against the 10 ms target. `rawio <folder>...` times listing and reading with no parsing, and `generate <folder> <count>` writes synthetic tracks. Results so far are in `docs/benchmarks-phase1.md`.
 - `cargo run -p umak-play -- <file>...`: play files. With no files it takes JSON commands on stdin. `--volume N` sets the gain, `--null-output` makes no sound, and `--check <file>...` decodes files without playing them.
+- `UMAK_JOIN_FILES="a;b;c" cargo test --release -p umak-audio --test engine report_on_real_joins -- --ignored --nocapture`: measure the joins between real files.
 - `cargo test -p umak-core --features engine`: include the tests of the engine inside the core. `cargo test --workspace` already includes them, because the app turns the feature on.
 - `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio`.
 

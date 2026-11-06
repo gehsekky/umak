@@ -1,9 +1,13 @@
-//! The engine thread: holds the player playlist, decodes the current track and keeps
-//! the sample queue full. Commands arrive on a channel and events go to a callback.
-//! The playlist, decoder and output are separate stages, so gapless playback can later
-//! decode the next track early without changing the others.
+//! The engine thread: holds the player playlist, decodes ahead and keeps the sample
+//! queue full. Commands arrive on a channel and events go to a callback.
+//!
+//! Playback is gapless because the queue never ends between tracks: when a track runs
+//! out of audio, the next one's goes straight after it. What is audible lags what is
+//! decoded by up to a queue's length, so the engine notes the frame where each track
+//! starts, and changes the current track when playback reaches that frame.
 
 use std::any::Any;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -96,17 +100,26 @@ impl Drop for Engine {
     }
 }
 
-struct Current {
-    decoder: Decoder,
-    /// Created at the first decoded audio, once the file's format is certain.
-    converter: Option<RateConverter>,
-    /// Converted samples waiting for room in the queue.
-    pending: Vec<f32>,
-    sent: usize,
-    finished: bool,
-    /// The position when the frames counted from `played_base` began.
+/// What is audible now. `played_base` is where its audio begins in the played frames.
+struct Playing {
     base_ms: u64,
     played_base: u64,
+    duration_ms: Option<u64>,
+}
+
+/// The track being decoded. It runs ahead of what is audible by up to a queue's length.
+struct Feed {
+    index: usize,
+    decoder: Decoder,
+    /// Whether its first audio has been queued, so its place in the output is known.
+    announced: bool,
+}
+
+/// A queued track that becomes the audible one when playback reaches frame `at`.
+struct Join {
+    at: u64,
+    index: usize,
+    duration_ms: Option<u64>,
 }
 
 struct Worker {
@@ -118,7 +131,20 @@ struct Worker {
     capacity: usize,
     tracks: Vec<TrackEntry>,
     index: Option<usize>,
-    current: Option<Current>,
+    playing: Option<Playing>,
+    feed: Option<Feed>,
+    upcoming: VecDeque<Join>,
+    /// Where the track after the last one decoded starts in the played frames.
+    join_at: Option<u64>,
+    /// Created at the first decoded audio, once the file's format is certain. Tracks at
+    /// the same rate share it, so the audio across a join is converted as one stream.
+    converter: Option<RateConverter>,
+    converter_rate: Option<u32>,
+    /// Where the converter's first output frame falls in the played frames.
+    converter_start: u64,
+    /// Converted samples waiting for room in the queue.
+    pending: Vec<f32>,
+    sent: usize,
     state: PlaybackState,
     decoded: Vec<f32>,
     mapped: Vec<f32>,
@@ -156,7 +182,15 @@ impl Worker {
             capacity,
             tracks: Vec::new(),
             index: None,
-            current: None,
+            playing: None,
+            feed: None,
+            upcoming: VecDeque::new(),
+            join_at: None,
+            converter: None,
+            converter_rate: None,
+            converter_start: 0,
+            pending: Vec::new(),
+            sent: 0,
             state: PlaybackState::Stopped,
             decoded: Vec::new(),
             mapped: Vec::new(),
@@ -220,7 +254,8 @@ impl Worker {
             }
             PlayerCommand::Stop => {
                 self.flush();
-                self.current = None;
+                self.clear_feeding();
+                self.playing = None;
                 self.shared.set_paused(false);
                 self.set_state(PlaybackState::Stopped);
             }
@@ -243,20 +278,20 @@ impl Worker {
     }
 
     fn position_ms(&self) -> u64 {
-        let Some(current) = &self.current else {
+        let Some(playing) = &self.playing else {
             return 0;
         };
         let frames = self
             .shared
             .played_frames()
-            .saturating_sub(current.played_base);
-        current.base_ms + frames * 1000 / u64::from(self.format.sample_rate)
+            .saturating_sub(playing.played_base);
+        playing.base_ms + frames * 1000 / u64::from(self.format.sample_rate)
     }
 
     fn duration_ms(&self) -> Option<u64> {
-        self.current
+        self.playing
             .as_ref()
-            .and_then(|current| current.decoder.duration_ms())
+            .and_then(|playing| playing.duration_ms)
     }
 
     fn emit_state(&mut self) {
@@ -305,22 +340,31 @@ impl Worker {
         }
     }
 
-    /// Starts the track at `index`, skipping any that cannot be opened. Past the end of
-    /// the list, playback stops.
-    fn start_track(&mut self, mut index: usize, start_ms: u64) {
-        self.flush();
-        self.current = None;
-        self.shared.set_paused(false);
-        let mut start_ms = start_ms;
+    /// Forgets everything decoded ahead of what is audible.
+    fn clear_feeding(&mut self) {
+        self.feed = None;
+        self.upcoming.clear();
+        self.join_at = None;
+        self.converter = None;
+        self.converter_rate = None;
+        self.pending.clear();
+        self.sent = 0;
+    }
+
+    fn open(track: &TrackEntry, start_ms: u64) -> Result<Decoder, String> {
+        let source: Box<dyn AudioSource> = Box::new(LocalFile(PathBuf::from(&track.path)));
+        let mut decoder = Decoder::open(source.as_ref())?;
+        if start_ms > 0 {
+            decoder.seek(start_ms)?;
+        }
+        Ok(decoder)
+    }
+
+    /// Opens the track at `index`, or the first after it that opens, reporting the rest.
+    fn open_from(&mut self, mut index: usize, mut start_ms: u64) -> Option<(usize, Decoder)> {
         while let Some(track) = self.tracks.get(index) {
-            let source: Box<dyn AudioSource> = Box::new(LocalFile(PathBuf::from(&track.path)));
-            match self.open(source.as_ref(), start_ms) {
-                Ok(current) => {
-                    self.current = Some(current);
-                    self.index = Some(index);
-                    self.set_state(PlaybackState::Playing);
-                    return;
-                }
+            match Self::open(track, start_ms) {
+                Ok(decoder) => return Some((index, decoder)),
                 Err(message) => {
                     let id = track.id.clone();
                     (self.events)(PlayerEvent::TrackFailed { id, message });
@@ -329,139 +373,247 @@ impl Worker {
                 }
             }
         }
-        self.index = None;
-        self.set_state(PlaybackState::Stopped);
+        None
     }
 
-    fn open(&self, source: &dyn AudioSource, start_ms: u64) -> Result<Current, String> {
-        let mut decoder = Decoder::open(source)?;
-        if start_ms > 0 {
-            decoder.seek(start_ms)?;
+    /// Plays the track at `index` right away, dropping what was queued, and skipping any
+    /// that cannot be opened. Past the end of the list, playback stops.
+    fn start_track(&mut self, index: usize, start_ms: u64) {
+        self.flush();
+        self.clear_feeding();
+        self.playing = None;
+        self.shared.set_paused(false);
+        let played = self.shared.played_frames();
+        self.converter_start = played;
+        match self.open_from(index, start_ms) {
+            Some((opened, decoder)) => {
+                // A skipped track's start position does not carry over to the next.
+                let base_ms = if opened == index { start_ms } else { 0 };
+                self.playing = Some(Playing {
+                    base_ms,
+                    played_base: played,
+                    duration_ms: decoder.duration_ms(),
+                });
+                self.feed = Some(Feed {
+                    index: opened,
+                    decoder,
+                    announced: true,
+                });
+                self.index = Some(opened);
+                self.set_state(PlaybackState::Playing);
+            }
+            None => {
+                self.index = None;
+                self.set_state(PlaybackState::Stopped);
+            }
         }
-        Ok(Current {
-            decoder,
-            converter: None,
-            pending: Vec::new(),
-            sent: 0,
-            finished: false,
-            base_ms: start_ms,
-            played_base: self.shared.played_frames(),
-        })
     }
 
     fn seek(&mut self, ms: u64) {
+        let (Some(index), Some(_)) = (self.index, &self.playing) else {
+            self.flush();
+            return;
+        };
         let ms = match self.duration_ms() {
             Some(duration) => ms.min(duration),
             None => ms,
         };
+        let still_decoding =
+            self.upcoming.is_empty() && self.feed.as_ref().is_some_and(|feed| feed.index == index);
+        if !still_decoding {
+            // Its decoder is gone: the next track is already being decoded.
+            let paused = self.state == PlaybackState::Paused;
+            self.start_track(index, ms);
+            if paused && self.state == PlaybackState::Playing {
+                self.shared.set_paused(true);
+                self.set_state(PlaybackState::Paused);
+            }
+            return;
+        }
+
         self.flush();
         let played = self.shared.played_frames();
-        let Some(current) = &mut self.current else {
+        self.pending.clear();
+        self.sent = 0;
+        self.join_at = None;
+        self.converter_start = played;
+        if let Some(converter) = &mut self.converter {
+            converter.reset();
+        }
+        if let Some(playing) = &mut self.playing {
+            playing.base_ms = ms;
+            playing.played_base = played;
+        }
+        let Some(feed) = &mut self.feed else {
             return;
         };
-        match current.decoder.seek(ms) {
-            Ok(()) => {
-                if let Some(converter) = &mut current.converter {
-                    converter.reset();
-                }
-                current.pending.clear();
-                current.sent = 0;
-                current.finished = false;
-                current.base_ms = ms;
-                current.played_base = played;
-                self.emit_state();
-            }
+        match feed.decoder.seek(ms) {
+            Ok(()) => self.emit_state(),
             Err(message) => {
                 // A seek past what the file holds ends the track, as reaching there would.
-                current.pending.clear();
-                current.sent = 0;
-                current.finished = true;
                 (self.events)(PlayerEvent::Error { message });
+                self.end_feed();
             }
+        }
+    }
+
+    /// Makes queued tracks audible once playback has reached them.
+    fn advance_tracks(&mut self) {
+        let played = self.shared.played_frames();
+        while let Some(join) = self.upcoming.front() {
+            if played < join.at {
+                return;
+            }
+            self.index = Some(join.index);
+            self.playing = Some(Playing {
+                base_ms: 0,
+                played_base: join.at,
+                duration_ms: join.duration_ms,
+            });
+            self.upcoming.pop_front();
+            self.emit_state();
         }
     }
 
     /// Does one unit of decoding work and says how long to wait for a command before
     /// the next one.
     fn pump(&mut self) -> Duration {
+        self.advance_tracks();
         let channels = usize::from(self.format.channels);
-        let Some(current) = &mut self.current else {
-            return IDLE_WAIT;
-        };
-
-        if current.sent < current.pending.len() {
+        if self.sent < self.pending.len() {
             let room = self.producer.slots();
-            let left = current.pending.len() - current.sent;
+            let left = self.pending.len() - self.sent;
             let count = room.min(left);
             let count = count - count % channels;
             let (pushed, _) = self
                 .producer
-                .push_partial_slice(&current.pending[current.sent..current.sent + count]);
+                .push_partial_slice(&self.pending[self.sent..self.sent + count]);
             let _ = pushed;
-            current.sent += count;
-            if current.sent < current.pending.len() {
+            self.sent += count;
+            if self.sent < self.pending.len() {
                 return FULL_QUEUE_WAIT;
             }
-            current.pending.clear();
-            current.sent = 0;
+            self.pending.clear();
+            self.sent = 0;
         }
 
-        if current.finished {
-            if self.producer.slots() == self.capacity {
-                let next = self.index.map_or(0, |index| index + 1);
-                self.start_track(next, 0);
+        if self.feed.is_some() {
+            return self.decode_next();
+        }
+        if self.playing.is_none() {
+            return IDLE_WAIT;
+        }
+        // Nothing is left to decode, so the list ends when the queue runs out.
+        if self.producer.slots() == self.capacity {
+            self.advance_tracks();
+            self.playing = None;
+            self.index = None;
+            self.set_state(PlaybackState::Stopped);
+            return Duration::ZERO;
+        }
+        FULL_QUEUE_WAIT
+    }
+
+    fn decode_next(&mut self) -> Duration {
+        let Some(feed) = &mut self.feed else {
+            return IDLE_WAIT;
+        };
+        self.decoded.clear();
+        let more = match feed.decoder.next_chunk(&mut self.decoded) {
+            Ok(more) => more,
+            Err(message) => {
+                self.fail_feed(message);
                 return Duration::ZERO;
             }
-            return FULL_QUEUE_WAIT;
+        };
+        let rate = feed.decoder.sample_rate();
+        let source_channels = feed.decoder.channels();
+        if !self.decoded.is_empty()
+            && let Err(message) = self.queue_decoded(rate, source_channels)
+        {
+            self.fail_feed(message);
+            return Duration::ZERO;
         }
+        if !more {
+            self.end_feed();
+        }
+        Duration::ZERO
+    }
 
-        self.decoded.clear();
-        match current.decoder.next_chunk(&mut self.decoded) {
-            Ok(more) => {
-                let rate = current.decoder.sample_rate();
-                let source_channels = current.decoder.channels();
-                if current.converter.is_none() && !self.decoded.is_empty() {
-                    match RateConverter::new(rate, self.format.sample_rate, channels) {
-                        Ok(converter) => current.converter = Some(converter),
-                        Err(message) => return self.fail_current(message),
-                    }
-                }
-                self.mapped.clear();
-                map_channels(
-                    &self.decoded,
-                    source_channels.max(1),
-                    channels,
-                    &mut self.mapped,
-                );
-                if let Some(converter) = &mut current.converter {
-                    let mut result = converter.process(&self.mapped, &mut current.pending);
-                    if !more && result.is_ok() {
-                        result = converter.finish(&mut current.pending);
-                    }
-                    if let Err(message) = result {
-                        return self.fail_current(message);
-                    }
-                }
-                if !more {
-                    current.finished = true;
-                }
-                Duration::ZERO
+    /// Converts the decoded audio into `pending`. A track at another rate first drains
+    /// the converter, which ends the previous track at its exact length.
+    fn queue_decoded(&mut self, rate: u32, source_channels: usize) -> Result<(), String> {
+        let channels = usize::from(self.format.channels);
+        if self.converter_rate != Some(rate) {
+            if let Some(old) = &mut self.converter {
+                old.finish(&mut self.pending)?;
+                self.converter_start += old.expected_output_frames();
             }
-            Err(message) => self.fail_current(message),
+            self.converter = Some(RateConverter::new(rate, self.format.sample_rate, channels)?);
+            self.converter_rate = Some(rate);
+        }
+        if let Some(feed) = &mut self.feed
+            && !feed.announced
+        {
+            feed.announced = true;
+            if let Some(at) = self.join_at {
+                self.upcoming.push_back(Join {
+                    at,
+                    index: feed.index,
+                    duration_ms: feed.decoder.duration_ms(),
+                });
+            }
+        }
+        self.mapped.clear();
+        map_channels(
+            &self.decoded,
+            source_channels.max(1),
+            channels,
+            &mut self.mapped,
+        );
+        match &mut self.converter {
+            Some(converter) => converter.process(&self.mapped, &mut self.pending),
+            None => Ok(()),
         }
     }
 
-    fn fail_current(&mut self, message: String) -> Duration {
-        if let Some(track) = self.index.and_then(|index| self.tracks.get(index)) {
+    /// Moves decoding to the next track, whose audio goes straight after this one's.
+    /// After the last track, the converter gives up the audio it holds.
+    fn end_feed(&mut self) {
+        let Some(feed) = self.feed.take() else {
+            return;
+        };
+        if let Some(converter) = &self.converter {
+            self.join_at = Some(self.converter_start + converter.expected_output_frames());
+        } else if self.join_at.is_none() {
+            self.join_at = Some(self.converter_start);
+        }
+        if let Some((index, decoder)) = self.open_from(feed.index + 1, 0) {
+            self.feed = Some(Feed {
+                index,
+                decoder,
+                announced: false,
+            });
+            return;
+        }
+        if let Some(mut converter) = self.converter.take()
+            && let Err(message) = converter.finish(&mut self.pending)
+        {
+            (self.events)(PlayerEvent::Error { message });
+        }
+        self.converter_rate = None;
+    }
+
+    fn fail_feed(&mut self, message: String) {
+        let track = self
+            .feed
+            .as_ref()
+            .and_then(|feed| self.tracks.get(feed.index));
+        if let Some(track) = track {
             let id = track.id.clone();
             (self.events)(PlayerEvent::TrackFailed { id, message });
         }
-        if let Some(current) = &mut self.current {
-            current.pending.clear();
-            current.sent = 0;
-            current.finished = true;
-        }
-        Duration::ZERO
+        self.end_feed();
     }
 }
 

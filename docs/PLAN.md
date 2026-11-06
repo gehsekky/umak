@@ -545,6 +545,13 @@ Goal: the real player. One list, gapless, at a consistent volume, with an EQ, an
 5. EQ and limiter as effects in the fixed signal chain: a 10-band graphic EQ with saved presets, new coefficients sent to the audio thread without locks, and changes smoothed to avoid clicks.
 6. The player bar: transport, seek, volume, and now-playing text.
 
+Gapless results, November 2026:
+
+- Encoder silence comes off using the LAME tag for MP3 and the iTunes tag for AAC in MP4. In a sample of the library, 397 of 400 tagged MP3s and all 25 sampled tagged AAC files decode to the exact length their tags state. FLAC, ALAC and WAV hold no encoder silence.
+- About 4,300 of 15,000 MP3s and 27 of 203 AAC files have no such tag, and a LAME tag with a bad checksum is ignored. These play with their silence, since nothing says how much there is.
+- Tracks at the same rate share one resampler, so a join through it matches the unsplit audio to within 0.001 of full scale. At the output rate the join is identical to the unsplit audio, sample for sample.
+- Across 12 real joins in live recordings that run across tracks, in MP3 and FLAC, the audio has at most 1 silent frame near the join and no step beyond what the music itself has.
+
 Not in this phase unless asked for: crossfade, EBU R128 analysis, parametric EQ, AutoEq import, linear-phase mode, device selection, shuffle and repeat, album art, a waveform seek bar, and WASAPI exclusive output.
 
 Exit criteria:

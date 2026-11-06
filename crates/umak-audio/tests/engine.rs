@@ -23,13 +23,25 @@ fn wav(path: &Path, rate: u32, tones: &[(f32, f32)]) {
     let mut samples = Vec::new();
     for (frequency, seconds) in tones {
         let frames = (rate as f32 * seconds) as u32;
-        for frame in 0..frames {
-            let value = (frame as f32 * frequency * std::f32::consts::TAU / rate as f32).sin();
-            let sample = (value * 0.5 * f32::from(i16::MAX)) as i16;
-            samples.extend_from_slice(&sample.to_le_bytes());
-            samples.extend_from_slice(&sample.to_le_bytes());
-        }
+        samples.extend(tone_bytes(rate, *frequency, 0..frames));
     }
+    wav_bytes(path, rate, samples);
+}
+
+/// Stereo samples of a tone, so a range can be one piece of a longer tone.
+fn tone_bytes(rate: u32, frequency: f32, frames: std::ops::Range<u32>) -> Vec<u8> {
+    let mut samples = Vec::new();
+    for frame in frames {
+        let value =
+            (frame as f64 * f64::from(frequency) * std::f64::consts::TAU / f64::from(rate)).sin();
+        let sample = (value * 0.5 * f64::from(i16::MAX)) as i16;
+        samples.extend_from_slice(&sample.to_le_bytes());
+        samples.extend_from_slice(&sample.to_le_bytes());
+    }
+    samples
+}
+
+fn wav_bytes(path: &Path, rate: u32, samples: Vec<u8>) {
     let mut file = b"RIFF".to_vec();
     file.extend((36 + samples.len() as u32).to_le_bytes());
     file.extend_from_slice(b"WAVEfmt ");
@@ -134,6 +146,24 @@ impl Harness {
             id: name.to_owned(),
             path: path.to_str().unwrap().to_owned(),
         }
+    }
+
+    /// A file holding one piece of a tone, so pieces played in turn make the whole tone.
+    fn piece(&self, name: &str, rate: u32, frames: std::ops::Range<u32>) -> TrackEntry {
+        let path = self._dir.path().join(format!("{name}.wav"));
+        wav_bytes(&path, rate, tone_bytes(rate, 997.0, frames));
+        TrackEntry {
+            id: name.to_owned(),
+            path: path.to_str().unwrap().to_owned(),
+        }
+    }
+
+    /// Plays a list to its end and returns everything that came out.
+    fn play_all(&mut self, tracks: Vec<TrackEntry>) -> Vec<f32> {
+        self.load(tracks, 0, 0);
+        self.wait_for_stop();
+        thread::sleep(Duration::from_millis(30));
+        self.take_audio()
     }
 
     fn load(&self, tracks: Vec<TrackEntry>, start_index: usize, start_ms: u64) {
@@ -579,4 +609,393 @@ fn a_full_decode_check_reports_the_format() {
     assert_eq!(check.decode_errors, 0);
     assert_eq!(check.duration_ms, Some(500));
     assert!(check_file("no/such/file.flac", 48_000).is_err());
+}
+
+/// The tracks announced as playing, in order, each once.
+fn announced(seen: &[PlayerEvent]) -> Vec<String> {
+    let mut tracks: Vec<String> = Vec::new();
+    for event in seen {
+        if let PlayerEvent::State {
+            track_id: Some(track),
+            state: PlaybackState::Playing,
+            ..
+        } = event
+            && tracks.last() != Some(track)
+        {
+            tracks.push(track.clone());
+        }
+    }
+    tracks
+}
+
+#[test]
+fn a_join_at_the_output_rate_adds_and_loses_no_samples() {
+    let mut whole = harness();
+    let expected = whole.play_all(vec![whole.piece("whole", OUTPUT_RATE, 0..60_000)]);
+    assert_eq!(expected.len(), 60_000 * 2);
+
+    let mut player = harness();
+    let pieces = vec![
+        player.piece("a", OUTPUT_RATE, 0..12_345),
+        player.piece("b", OUTPUT_RATE, 12_345..30_001),
+        player.piece("c", OUTPUT_RATE, 30_001..60_000),
+    ];
+    let joined = player.play_all(pieces);
+    assert!(
+        joined == expected,
+        "the joined audio differs from the whole"
+    );
+    assert_eq!(announced(&player.seen), ["a", "b", "c"]);
+}
+
+#[test]
+fn a_join_through_the_resampler_matches_the_whole_track() {
+    let rate = 44_100;
+    let mut whole = harness();
+    let expected = whole.play_all(vec![whole.piece("whole", rate, 0..60_000)]);
+
+    let mut player = harness();
+    let pieces = vec![
+        player.piece("a", rate, 0..12_345),
+        player.piece("b", rate, 12_345..30_001),
+        player.piece("c", rate, 30_001..60_000),
+    ];
+    let joined = player.play_all(pieces);
+    assert_eq!(joined.len(), expected.len());
+    let worst = joined
+        .iter()
+        .zip(&expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max);
+    assert!(worst < 0.001, "worst difference {worst}");
+}
+
+#[test]
+fn a_join_between_sample_rates_keeps_each_length_and_leaves_no_gap() {
+    let mut player = harness();
+    let first = player.file("first", 44_100, &[(440.0, 0.5)]);
+    let second = player.file("second", 96_000, &[(880.0, 0.5)]);
+    let third = player.file("third", 44_100, &[(1760.0, 0.5)]);
+    let audio = player.play_all(vec![first, second, third]);
+
+    let half_second = OUTPUT_RATE as usize / 2;
+    assert!(
+        (audio.len() / 2).abs_diff(half_second * 3) <= 2,
+        "{} frames",
+        audio.len() / 2
+    );
+    let section = |number: usize| {
+        let start = (half_second * number + 2000) * 2;
+        &audio[start..start + 40_000]
+    };
+    for (number, tone) in [(0, 440.0), (1, 880.0), (2, 1760.0)] {
+        let pitch = frequency(section(number));
+        assert!(near(pitch, tone), "section {number}: {pitch} Hz");
+    }
+    // Sine tones cross zero, but never rest there.
+    let mut silent = 0;
+    let mut longest_silence = 0;
+    for frame in audio.chunks_exact(2) {
+        silent = if frame[0].abs() < 1e-4 { silent + 1 } else { 0 };
+        longest_silence = longest_silence.max(silent);
+    }
+    assert!(longest_silence < 8, "{longest_silence} silent frames");
+    assert_eq!(announced(&player.seen), ["first", "second", "third"]);
+}
+
+#[test]
+fn tracks_shorter_than_the_queue_are_each_announced_and_keep_their_length() {
+    let mut player = harness();
+    let tracks: Vec<TrackEntry> = (0..6)
+        .map(|index| {
+            let start = index * 4800;
+            player.piece(&format!("t{index}"), OUTPUT_RATE, start..start + 4800)
+        })
+        .collect();
+    let audio = player.play_all(tracks);
+    assert_eq!(audio.len(), 6 * 4800 * 2);
+    assert_eq!(
+        announced(&player.seen),
+        ["t0", "t1", "t2", "t3", "t4", "t5"]
+    );
+}
+
+#[test]
+fn the_current_track_and_position_change_when_the_join_is_heard() {
+    let dir = tempfile::tempdir().unwrap();
+    let entry = |name: &str, seconds: f32| {
+        let path = dir.path().join(format!("{name}.wav"));
+        wav(&path, OUTPUT_RATE, &[(440.0, seconds)]);
+        TrackEntry {
+            id: name.to_owned(),
+            path: path.to_str().unwrap().to_owned(),
+        }
+    };
+    let tracks = vec![entry("first", 0.5), entry("second", 1.0)];
+
+    // Real-time output: both tracks fit in the queue, so both are decoded at once.
+    let (sender, events) = mpsc::channel();
+    let engine = Engine::spawn(
+        || Ok(Box::new(NullOutput::new(OUTPUT_RATE, 2)) as Box<dyn AudioOutput>),
+        ChainParts::default(),
+        move |event| {
+            let _ = sender.send((Instant::now(), event));
+        },
+    );
+    engine.send(PlayerCommand::Load {
+        tracks,
+        start_index: 0,
+        start_ms: 0,
+    });
+    let mut started = None;
+    loop {
+        let (when, event) = events.recv_timeout(WAIT).unwrap();
+        let PlayerEvent::State {
+            track_id: Some(track),
+            index,
+            position_ms,
+            duration_ms,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        if track == "first" {
+            started.get_or_insert(when);
+        } else {
+            let elapsed = when.duration_since(started.unwrap()).as_millis();
+            assert!((450..=650).contains(&elapsed), "after {elapsed} ms");
+            assert_eq!(index, Some(1));
+            assert_eq!(duration_ms, Some(1000));
+            assert!(position_ms < 50, "position {position_ms} ms");
+            return;
+        }
+    }
+}
+
+/// Loads a list and pauses, so the second track sits decoded in the queue.
+fn paused_with_the_next_track_queued(player: &mut Harness) -> Vec<TrackEntry> {
+    let first = player.file(
+        "first",
+        OUTPUT_RATE,
+        &[(400.0, 0.1), (800.0, 0.1), (1600.0, 0.1)],
+    );
+    let second = player.file("second", OUTPUT_RATE, &[(3200.0, 0.3)]);
+    let third = player.file("third", OUTPUT_RATE, &[(200.0, 0.3)]);
+    let tracks = vec![first, second, third];
+    player.load(tracks.clone(), 0, 0);
+    player.engine.send(PlayerCommand::Pause);
+    player.wait_for(|event| {
+        matches!(
+            event,
+            PlayerEvent::State {
+                state: PlaybackState::Paused,
+                ..
+            }
+        )
+    });
+    thread::sleep(Duration::from_millis(100));
+    player.take_audio();
+    tracks
+}
+
+#[test]
+fn a_seek_in_the_current_track_works_after_the_next_one_is_queued() {
+    let mut player = harness();
+    paused_with_the_next_track_queued(&mut player);
+    player.engine.send(PlayerCommand::Seek { ms: 200 });
+    player.wait_for(|event| {
+        matches!(
+            event,
+            PlayerEvent::State {
+                state: PlaybackState::Paused,
+                position_ms: 200,
+                track_id: Some(track),
+                ..
+            } if track == "first"
+        )
+    });
+    player.take_audio();
+    player.engine.send(PlayerCommand::Play);
+    player.wait_for_stop();
+    thread::sleep(Duration::from_millis(30));
+    let audio = player.take_audio();
+
+    let tenth = OUTPUT_RATE as usize / 10;
+    assert_eq!(audio.len() / 2, tenth + 2 * 3 * tenth);
+    let pitch = frequency(&audio[..tenth * 2]);
+    assert!(near(pitch, 1600.0), "after the seek: {pitch} Hz");
+    let pitch = frequency(&audio[tenth * 2..tenth * 8]);
+    assert!(near(pitch, 3200.0), "the next track: {pitch} Hz");
+}
+
+#[test]
+fn next_skips_to_the_right_track_after_the_next_one_is_queued() {
+    let mut player = harness();
+    paused_with_the_next_track_queued(&mut player);
+    player.engine.send(PlayerCommand::Next);
+    player.wait_for_track("second");
+    player.wait_for_stop();
+    thread::sleep(Duration::from_millis(30));
+    let audio = player.take_audio();
+    let tenth = OUTPUT_RATE as usize / 10;
+    assert_eq!(audio.len() / 2, 6 * tenth);
+    assert!(near(frequency(&audio[..tenth * 6]), 3200.0));
+    assert!(near(frequency(&audio[tenth * 6..]), 200.0));
+}
+
+#[test]
+fn a_bad_track_between_two_good_ones_is_reported_and_leaves_no_gap() {
+    let mut player = harness();
+    let first = player.piece("first", OUTPUT_RATE, 0..24_000);
+    let gone = TrackEntry {
+        id: "gone".to_owned(),
+        path: player
+            ._dir
+            .path()
+            .join("gone.flac")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    };
+    let last = player.piece("last", OUTPUT_RATE, 24_000..48_000);
+    let joined = player.play_all(vec![first, gone, last]);
+
+    let mut whole = harness();
+    let expected = whole.play_all(vec![whole.piece("whole", OUTPUT_RATE, 0..48_000)]);
+    assert!(
+        joined == expected,
+        "the joined audio differs from the whole"
+    );
+    assert_eq!(announced(&player.seen), ["first", "last"]);
+    assert!(
+        player
+            .seen
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::TrackFailed { id, .. } if id == "gone"))
+    );
+}
+
+const MP3_FRAME_BYTES: usize = 417;
+const MP3_FRAME_SAMPLES: u64 = 1152;
+
+/// A silent MP3 of `frames` audio frames at 44.1 kHz. With `trim`, it starts with a LAME
+/// tag stating the encoder's delay and padding fields.
+fn silent_mp3(path: &Path, frames: u32, trim: Option<(u32, u32)>) {
+    // MPEG 1 layer 3, 128 kbps, 44.1 kHz, stereo. All-zero side info means silence.
+    let frame = |body: &[u8]| {
+        let mut bytes = vec![0_u8; MP3_FRAME_BYTES];
+        bytes[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+        bytes[36..36 + body.len()].copy_from_slice(body);
+        bytes
+    };
+    let mut file = Vec::new();
+    if let Some((delay, padding)) = trim {
+        let mut tag = b"Info".to_vec();
+        tag.extend(1_u32.to_be_bytes()); // Only the frame count is present.
+        tag.extend(frames.to_be_bytes());
+        tag.extend_from_slice(b"LAME3.100");
+        tag.extend([0; 2]); // Revision and lowpass.
+        tag.extend([0; 8]); // Peak and two gains.
+        tag.extend([0; 2]); // Encoding flags and bitrate.
+        let packed = (delay << 12) | padding;
+        tag.extend(&packed.to_be_bytes()[1..]);
+        tag.extend([0; 12]); // The rest, with a zero CRC, which means "do not check".
+        file.extend(frame(&tag));
+    }
+    for _ in 0..frames {
+        file.extend(frame(&[]));
+    }
+    fs::write(path, file).unwrap();
+}
+
+#[test]
+fn the_lame_tag_removes_encoder_delay_and_padding_from_an_mp3() {
+    let dir = tempfile::tempdir().unwrap();
+    let tagged = dir.path().join("tagged.mp3");
+    silent_mp3(&tagged, 20, Some((576, 1000)));
+    let check = check_file(tagged.to_str().unwrap(), 44_100).unwrap();
+    // The decoder adds 529 frames of its own delay, which also comes off both fields.
+    let expected = 20 * MP3_FRAME_SAMPLES - (576 + 529) - (1000 - 529);
+    assert_eq!(check.frames, expected);
+
+    let untagged = dir.path().join("untagged.mp3");
+    silent_mp3(&untagged, 20, None);
+    let check = check_file(untagged.to_str().unwrap(), 44_100).unwrap();
+    assert_eq!(check.frames, 20 * MP3_FRAME_SAMPLES);
+}
+
+#[test]
+fn mp3_tracks_join_at_their_trimmed_lengths() {
+    let mut player = harness();
+    let mut tracks = Vec::new();
+    for name in ["a", "b"] {
+        let path = player._dir.path().join(format!("{name}.mp3"));
+        silent_mp3(&path, 40, Some((576, 1000)));
+        tracks.push(TrackEntry {
+            id: name.to_owned(),
+            path: path.to_str().unwrap().to_owned(),
+        });
+    }
+    let audio = player.play_all(tracks);
+    let trimmed = 40 * MP3_FRAME_SAMPLES - (576 + 529) - (1000 - 529);
+    let expected = (2 * trimmed) as f64 * f64::from(OUTPUT_RATE) / 44_100.0;
+    assert!(
+        (audio.len() as f64 / 2.0 - expected).abs() <= 1.0,
+        "{} frames, expected {expected}",
+        audio.len() / 2
+    );
+    assert_eq!(announced(&player.seen), ["a", "b"]);
+}
+
+/// Measures real joins, for checking against music that runs across tracks. Set
+/// `UMAK_JOIN_FILES` to file paths separated by `;`. Each neighboring pair plays from
+/// three seconds before the join until three seconds after it.
+#[test]
+#[ignore = "needs real files; run with --ignored --nocapture"]
+fn report_on_real_joins() {
+    let files = std::env::var("UMAK_JOIN_FILES").expect("set UMAK_JOIN_FILES");
+    let files: Vec<&str> = files.split(';').collect();
+    for pair in files.windows(2) {
+        let mut player = harness();
+        let entry = |id: &str, path: &str| TrackEntry {
+            id: id.to_owned(),
+            path: path.to_owned(),
+        };
+        let check = check_file(pair[0], OUTPUT_RATE).unwrap();
+        let start_ms = check.output_frames * 1000 / u64::from(OUTPUT_RATE) - 3000;
+        player.load(vec![entry("a", pair[0]), entry("b", pair[1])], 0, start_ms);
+        player.wait_for_track("b");
+        player.wait_for_frames(OUTPUT_RATE as usize * 6);
+        player.engine.send(PlayerCommand::Stop);
+        let audio = player.take_audio();
+
+        let left: Vec<f32> = audio.chunks_exact(2).map(|frame| frame[0]).collect();
+        let join = OUTPUT_RATE as usize * 3;
+        let window = OUTPUT_RATE as usize / 2;
+        let (from, to) = (join.saturating_sub(window), (join + window).min(left.len()));
+        let (mut silent, mut longest) = (0, 0);
+        for sample in &left[from..to] {
+            silent = if sample.abs() < 1e-5 { silent + 1 } else { 0 };
+            longest = longest.max(silent);
+        }
+        let mut steps: Vec<f32> = left[from..to]
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .collect();
+        let step_at_join = steps
+            .iter()
+            .skip(window.saturating_sub(40))
+            .take(80)
+            .fold(0.0, |worst: f32, step| worst.max(*step));
+        steps.sort_by(f32::total_cmp);
+        println!(
+            "{} -> {}\n  silent frames near the join: {longest}; largest step at the join {step_at_join:.4}, near it p99 {:.4}, max {:.4}; a's output {} frames",
+            pair[0],
+            pair[1],
+            steps[steps.len() * 99 / 100],
+            steps[steps.len() - 1],
+            check.output_frames,
+        );
+    }
 }

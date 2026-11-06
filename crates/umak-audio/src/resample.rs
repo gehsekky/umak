@@ -40,6 +40,8 @@ struct Converter {
 pub struct RateConverter {
     channels: usize,
     converter: Option<Converter>,
+    /// Frames passed through when the rates match.
+    passed: u64,
 }
 
 impl RateConverter {
@@ -48,6 +50,7 @@ impl RateConverter {
             return Ok(Self {
                 channels,
                 converter: None,
+                passed: 0,
             });
         }
         let resampler = Fft::<f32>::new(
@@ -70,6 +73,7 @@ impl RateConverter {
                 frames_out: 0,
                 resampler,
             }),
+            passed: 0,
         })
     }
 
@@ -78,6 +82,7 @@ impl RateConverter {
         let channels = self.channels;
         let Some(state) = &mut self.converter else {
             output.extend_from_slice(input);
+            self.passed += (input.len() / channels) as u64;
             return Ok(());
         };
         state.pending.extend_from_slice(input);
@@ -99,7 +104,19 @@ impl RateConverter {
         Ok(())
     }
 
-    /// Converts what is left at the end of a track. The resampler holds audio back, so
+    /// How many output frames all the input so far comes to, whether or not they have
+    /// come out yet. The audio that follows starts at this frame.
+    pub fn expected_output_frames(&self) -> u64 {
+        match &self.converter {
+            Some(state) => {
+                let frames_in = state.frames_in + (state.pending.len() / self.channels) as u64;
+                (frames_in as f64 * state.resampler.resample_ratio()).round() as u64
+            }
+            None => self.passed,
+        }
+    }
+
+    /// Converts what is left at the end of the audio. The resampler holds audio back, so
     /// silence pushes the last real frames out, stopping at the exact expected length.
     pub fn finish(&mut self, output: &mut Vec<f32>) -> Result<(), String> {
         let channels = self.channels;
@@ -130,6 +147,7 @@ impl RateConverter {
 
     /// Forgets all queued audio, for a seek.
     pub fn reset(&mut self) {
+        self.passed = 0;
         if let Some(state) = &mut self.converter {
             state.resampler.reset();
             state.delay_left = state.resampler.output_delay();
@@ -253,6 +271,22 @@ mod tests {
         let mut after = Vec::new();
         converter.finish(&mut after).unwrap();
         assert!(after.iter().all(|sample| sample.abs() < 0.01));
+    }
+
+    #[test]
+    fn the_expected_length_counts_audio_the_converter_still_holds() {
+        for (from, to) in [(44_100, 48_000), (48_000, 48_000)] {
+            let mut converter = RateConverter::new(from, to, 2).unwrap();
+            let mut output = Vec::new();
+            converter
+                .process(&sine(1000.0, from, 1500), &mut output)
+                .unwrap();
+            let expected = (1500.0 * f64::from(to) / f64::from(from)).round() as u64;
+            assert_eq!(converter.expected_output_frames(), expected);
+            converter.finish(&mut output).unwrap();
+            assert_eq!(converter.expected_output_frames(), expected);
+            assert_eq!(output.len() as u64 / 2, expected);
+        }
     }
 
     #[test]
