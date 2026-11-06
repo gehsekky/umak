@@ -4,7 +4,7 @@ A local-first desktop music library manager, tagger and player, built with Tauri
 
 ## Current phase
 
-Phase 2: Player. See "Phase 2 brief" in `docs/PLAN.md`. Phase 1 is complete. Work one phase at a time; each ends with the exit criteria under Milestones.
+Phase 3: Tagging and management. See "Phase 3 brief" in `docs/PLAN.md`. Phases 1 and 2 are complete. Work one phase at a time; each ends with the exit criteria under Milestones.
 
 ## Hard rules
 
@@ -45,6 +45,7 @@ Run from the repository root:
 - `cargo run -p umak-play -- <file>...`: play files. With no files it takes JSON commands on stdin. `--volume N` sets the gain, `--null-output` makes no sound, and `--check <file>...` decodes files without playing them.
 - `UMAK_JOIN_FILES="a;b;c" cargo test --release -p umak-audio --test engine report_on_real_joins -- --ignored --nocapture`: measure the joins between real files.
 - `cargo test -p umak-core --features engine`: include the tests of the engine inside the core. `cargo test --workspace` already includes them, because the app turns the feature on.
+- `UMAK_TAG_CORPUS=<folder> cargo test --release -p umak-core --test tag_corpus -- --ignored --nocapture`: write tags to real files to find what fixtures cannot. It changes the files, so it needs a folder of copies holding a `.umak-tag-corpus` file.
 - `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio`.
 
 Run from `app/` (run `npm install` first):

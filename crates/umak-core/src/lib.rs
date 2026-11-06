@@ -12,6 +12,7 @@ pub mod player_engine;
 pub mod playlists;
 pub mod scan;
 pub mod stats;
+pub mod tagwrite;
 pub mod transfer;
 
 use serde::Serialize;

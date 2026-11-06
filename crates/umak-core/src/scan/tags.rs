@@ -138,7 +138,7 @@ pub fn read_file<R: Read + Seek>(reader: R) -> Result<FileInfo, String> {
 }
 
 /// Lofty's top-level message only names the format; the cause is in its source.
-fn full_error(error: &dyn std::error::Error) -> String {
+pub(crate) fn full_error(error: &dyn std::error::Error) -> String {
     let mut text = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {

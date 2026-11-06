@@ -183,7 +183,9 @@ The scanner assigns each track to an album using the first rule that applies. Gr
 
 - Batch edit across any selection, with a preview of every change before it is written.
 - Write back in each file's native format; never convert tag formats silently.
-- Write safely: temp file, verify, then replace, so a crash cannot corrupt a file.
+- Write safely: temp file, verify, then replace, so a crash cannot corrupt a file. The check reads the edited copy back: the edited fields must hold the new values, every other tag item must be unchanged, and a hash of the whole audio must match.
+- ID3v2 tags are edited frame by frame, so frames that are not being edited keep their exact bytes. The tag library is not used for this, because when writing ID3v2.3 it discards frames such as TSOP and TSOT and writes URL frames in the wrong encoding. It still reads all formats and writes FLAC and MP4.
+- An ID3v1 or APE tag beside the main tag is kept in step, so another player does not find the old values there.
 - Undo history for tag changes.
 
 **Cleanup tools**
@@ -572,6 +574,29 @@ Exit criteria:
 - The audio thread still never allocates, with the EQ and limiter running.
 - No underruns during a large import, checked with the health log.
 - A listening check confirms it sounds right.
+
+**Phase 3 brief**
+
+Goal: fix the library from inside the app. Tag edits are safe and reversible, the library keeps itself up to date, and duplicates and rule-based playlists are easy. Build order:
+
+1. The safe tag writer, for MP3, FLAC and M4A, tested against a corpus of copies of real files.
+2. Edit planning: a preview of every change before it is written, batch writes as a cancelable job, library updates after each write, and undo history.
+3. The tag editor UI: batch editing across any selection, with the preview.
+4. The file watcher: adds, moves, changes and deletes appear on their own, with a periodic rescan for network roots.
+5. The duplicate finder, by fingerprint and by tag match.
+6. Ratings and play counts, recorded as they happen, then smart playlists with a rule editor.
+
+Not in this phase unless asked for: renaming and moving files from tag patterns, AcoustID and MusicBrainz lookups, embedded art editing, and loudness analysis.
+
+Exit criteria:
+
+- All target tag formats read and write cleanly: MP3 with ID3v2.3 and ID3v2.4, FLAC, and AAC and ALAC in M4A, checked against copies of real files by a comparison independent of the tag library.
+- A batch edit shows every change first, can be canceled, and can be undone.
+- A failed write leaves the file exactly as it was.
+- Changes made outside the app appear without a manual rescan.
+- Ratings and play counts survive an export and import.
+
+Phase 2 closed in November 2026 at the owner's go-ahead. The listening check in its brief was not separately reported.
 
 ## Milestones, risks and open questions
 

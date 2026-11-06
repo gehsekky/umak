@@ -35,6 +35,15 @@ pub fn fingerprint<R: Read + Seek>(reader: &mut R, samples: usize) -> io::Result
     Ok(output)
 }
 
+/// A hash of the whole audio region, to prove audio is unchanged after a tag edit.
+pub fn audio_hash<R: Read + Seek>(reader: &mut R) -> io::Result<[u8; 32]> {
+    let (start, end) = audio_region(reader)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0; SAMPLE_LEN as usize];
+    read_into_hash(reader, start, end - start, &mut buffer, &mut hasher)?;
+    Ok(*hasher.finalize().as_bytes())
+}
+
 fn read_into_hash<R: Read + Seek>(
     reader: &mut R,
     offset: u64,
