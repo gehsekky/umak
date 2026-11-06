@@ -9,7 +9,11 @@ export type PlayerSettings = {
 /**
  * Output gain from 0 to 1.
  */
-volume: number, replayGain: ReplayGainMode, 
+volume: number, 
+/**
+ * Silent, while keeping the volume to come back to.
+ */
+muted: boolean, replayGain: ReplayGainMode, 
 /**
  * Decibels on top of the ReplayGain value. Applies unless ReplayGain is off.
  */

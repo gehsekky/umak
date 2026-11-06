@@ -5,6 +5,7 @@ import type { PlayerSettings } from "../api/generated/PlayerSettings";
 import type { PlayerStatus } from "../api/generated/PlayerStatus";
 import { app } from "../state/app.svelte";
 import { playerClient } from "./client";
+import { gainToSlider, latestOnly, sliderToGain } from "./volume";
 
 class PlayerState {
   status = $state.raw<PlayerStatus | null>(null);
@@ -19,6 +20,37 @@ class PlayerState {
   readonly playingTrackId = $derived(
     this.status && this.status.state !== "stopped" ? (this.status.track?.id ?? null) : null,
   );
+
+  private sendVolume = latestOnly((volume: number) =>
+    playerClient.setVolume(volume).catch((failure: { message?: string }) => {
+      app.fail(failure.message ?? String(failure));
+    }),
+  );
+
+  /** Sets the volume without waiting. A burst of changes sends only the newest. */
+  setVolumeSoon(volume: number): void {
+    // Shown at once, so the next change in the burst starts from this one.
+    if (this.settings) this.settings = { ...this.settings, volume, muted: false };
+    this.sendVolume(volume);
+  }
+
+  /** Moves the volume by a share of the slider. */
+  nudgeVolume(sliderStep: number): void {
+    const settings = this.settings;
+    if (!settings) return;
+    const from = settings.muted ? 0 : gainToSlider(settings.volume);
+    this.setVolumeSoon(sliderToGain(from + sliderStep));
+  }
+
+  /** Moves within the current track, staying inside it. */
+  async skip(deltaMs: number): Promise<void> {
+    const status = this.status;
+    if (!status || status.state === "stopped") return;
+    const end = status.durationMs ?? Number.MAX_SAFE_INTEGER;
+    const ms = Math.max(0, Math.min(end, this.positionMs + deltaMs));
+    this.positionMs = ms;
+    await playerClient.seek(ms);
+  }
 
   private async loadEqPresets(): Promise<void> {
     this.eqPresets = await playerClient.eqPresets();

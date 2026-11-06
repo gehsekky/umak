@@ -27,6 +27,8 @@ export interface PlayerClient {
   playPlaylist(id: string, startIndex: number): Promise<void>;
   /** A page of the player playlist. */
   queueItems(offset: number, limit: number): Promise<PlaylistPage>;
+  /** Replaces the player playlist with the album a track is on, and plays it. */
+  playAlbum(trackId: string): Promise<void>;
   /** Plays one entry of the player playlist, leaving the list as it is. */
   playQueueEntry(index: number): Promise<void>;
   /** Adds tracks to the end of the player playlist. */
@@ -43,6 +45,7 @@ export interface PlayerClient {
   settings(): Promise<PlayerSettings>;
   /** Sets the output gain, from 0 to 1. */
   setVolume(volume: number): Promise<void>;
+  setMuted(muted: boolean): Promise<void>;
   setGain(replayGain: ReplayGainMode, preampDb: number): Promise<void>;
   setEq(enabled: boolean, bands: number[]): Promise<void>;
   eqPresets(): Promise<EqPresets>;
@@ -62,6 +65,9 @@ export const playerClient: PlayerClient = {
   },
   queueItems(offset, limit) {
     return call("player.queue.items", { offset, limit });
+  },
+  async playAlbum(trackId) {
+    await call("player.playAlbum", { trackId });
   },
   async playQueueEntry(index) {
     await call("player.queue.play", { index });
@@ -98,6 +104,9 @@ export const playerClient: PlayerClient = {
   },
   async setVolume(volume) {
     await call("player.setVolume", { volume });
+  },
+  async setMuted(muted) {
+    await call("player.setMuted", { muted });
   },
   async setGain(replayGain, preampDb) {
     await call("player.setGain", { replayGain, preampDb });

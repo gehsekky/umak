@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   actionLabel,
+  keyBelongsToElement,
   onActionError,
   registerAction,
   runAction,
@@ -54,5 +55,26 @@ describe("action registry", () => {
     expect(shortcutName(key("F", { ctrlKey: true, shiftKey: true, altKey: true }))).toBe(
       "ctrl+alt+shift+f",
     );
+  });
+});
+
+describe("keyBelongsToElement", () => {
+  it("gives plain keys to what is being typed in or pressed", () => {
+    expect(keyBelongsToElement("m", "INPUT")).toBe(true);
+    expect(keyBelongsToElement(" ", "BUTTON")).toBe(true);
+    expect(keyBelongsToElement("m", "DIV")).toBe(false);
+    expect(keyBelongsToElement("m", null)).toBe(false);
+  });
+
+  it("gives arrows with a modifier to text boxes and sliders", () => {
+    expect(keyBelongsToElement("ctrl+arrowleft", "INPUT")).toBe(true);
+    expect(keyBelongsToElement("shift+arrowright", "INPUT")).toBe(true);
+    expect(keyBelongsToElement("ctrl+arrowleft", "DIV")).toBe(false);
+    expect(keyBelongsToElement("ctrl+arrowleft", "BUTTON")).toBe(false);
+  });
+
+  it("leaves other shortcuts working anywhere", () => {
+    expect(keyBelongsToElement("ctrl+f", "INPUT")).toBe(false);
+    expect(keyBelongsToElement("ctrl+q", "SELECT")).toBe(false);
   });
 });

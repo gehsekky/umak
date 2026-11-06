@@ -31,6 +31,12 @@ export type ActionMap = {
   "player.previous": void;
   "player.seek": { ms: number };
   "player.setVolume": { volume: number };
+  "player.toggleMute": void;
+  "player.volumeUp": void;
+  "player.volumeDown": void;
+  "player.skipForward": void;
+  "player.skipBack": void;
+  "player.playAlbum": { trackId: string };
   "player.setGain": { replayGain: ReplayGainMode; preampDb: number };
   "player.setEq": { enabled: boolean; bands: number[] };
   "player.saveEqPreset": { name: string; bands: number[] };
@@ -107,6 +113,18 @@ export function shortcutName(event: {
   if (event.shiftKey) parts.push("shift");
   parts.push(event.key.toLowerCase());
   return parts.join("+");
+}
+
+/**
+ * Whether a key press belongs to the element it happened in, not to a shortcut. Plain
+ * keys belong to whatever is being typed in or pressed. Arrows with a modifier move
+ * through text and move sliders, so they belong to those elements too.
+ */
+export function keyBelongsToElement(name: string, tag: string | null): boolean {
+  if (!name.includes("+")) {
+    return tag !== null && ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(tag);
+  }
+  return name.includes("arrow") && tag !== null && ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
 }
 
 /** Runs the action bound to a key press, returning whether there was one. */

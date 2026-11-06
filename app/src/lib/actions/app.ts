@@ -8,6 +8,10 @@ import { player } from "../player/state.svelte";
 import { app } from "../state/app.svelte";
 import { onActionError, registerAction } from "./registry";
 
+const SKIP_MS = 5000;
+/** A share of the volume slider. */
+const VOLUME_STEP = 0.05;
+
 export function registerAppActions(): void {
   onActionError((message) => app.fail(message));
 
@@ -172,11 +176,34 @@ export function registerAppActions(): void {
     run: () => playerClient.control(player.status?.state === "playing" ? "pause" : "play"),
   });
   registerAction({ id: "player.stop", label: "Stop", run: () => playerClient.control("stop") });
-  registerAction({ id: "player.next", label: "Next", run: () => playerClient.control("next") });
+  registerAction({
+    id: "player.next",
+    label: "Next",
+    shortcut: "ctrl+arrowright",
+    run: () => playerClient.control("next"),
+  });
   registerAction({
     id: "player.previous",
     label: "Previous",
+    shortcut: "ctrl+arrowleft",
     run: () => playerClient.control("previous"),
+  });
+  registerAction({
+    id: "player.skipForward",
+    label: "Skip forward",
+    shortcut: "shift+arrowright",
+    run: () => player.skip(SKIP_MS),
+  });
+  registerAction({
+    id: "player.skipBack",
+    label: "Skip back",
+    shortcut: "shift+arrowleft",
+    run: () => player.skip(-SKIP_MS),
+  });
+  registerAction({
+    id: "player.playAlbum",
+    label: "Play album",
+    run: ({ trackId }) => playerClient.playAlbum(trackId),
   });
   registerAction({ id: "player.seek", label: "Seek", run: ({ ms }) => playerClient.seek(ms) });
 
@@ -184,6 +211,24 @@ export function registerAppActions(): void {
     id: "player.setVolume",
     label: "Volume",
     run: ({ volume }) => playerClient.setVolume(volume),
+  });
+  registerAction({
+    id: "player.toggleMute",
+    label: "Mute",
+    shortcut: "m",
+    run: () => playerClient.setMuted(!player.settings?.muted),
+  });
+  registerAction({
+    id: "player.volumeUp",
+    label: "Volume up",
+    shortcut: "ctrl+arrowup",
+    run: () => player.nudgeVolume(VOLUME_STEP),
+  });
+  registerAction({
+    id: "player.volumeDown",
+    label: "Volume down",
+    shortcut: "ctrl+arrowdown",
+    run: () => player.nudgeVolume(-VOLUME_STEP),
   });
   registerAction({
     id: "player.setGain",

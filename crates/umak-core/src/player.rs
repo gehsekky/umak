@@ -29,6 +29,7 @@ const MAX_HEALTH_LOG_BYTES: u64 = 256 * 1024;
 /// A device normally asks for audio every 10 ms or so. This is well past that.
 const STALL_US: u64 = 100_000;
 const VOLUME_KEY: &str = "player.volume";
+const MUTED_KEY: &str = "player.muted";
 const REPLAY_GAIN_KEY: &str = "player.replayGain";
 const PREAMP_KEY: &str = "player.preampDb";
 /// The preamp's range in decibels.
@@ -101,6 +102,8 @@ impl Default for PlayerStatus {
 pub struct PlayerSettings {
     /// Output gain from 0 to 1.
     pub volume: f32,
+    /// Silent, while keeping the volume to come back to.
+    pub muted: bool,
     pub replay_gain: ReplayGainMode,
     /// Decibels on top of the ReplayGain value. Applies unless ReplayGain is off.
     pub preamp_db: f32,
@@ -204,6 +207,7 @@ impl Default for PlayerSettings {
     fn default() -> Self {
         Self {
             volume: 1.0,
+            muted: false,
             replay_gain: ReplayGainMode::Off,
             preamp_db: 0.0,
             eq: EqSettings::default(),
@@ -261,6 +265,7 @@ fn load_settings(conn: &Connection) -> Result<PlayerSettings, ApiError> {
         .unwrap_or(defaults.eq);
     Ok(PlayerSettings {
         volume: number(VOLUME_KEY)?.map_or(defaults.volume, |volume| volume.clamp(0.0, 1.0)),
+        muted: saved_setting(conn, MUTED_KEY)?.as_deref() == Some("true"),
         replay_gain,
         preamp_db: number(PREAMP_KEY)?.map_or(defaults.preamp_db, clamp_preamp),
         eq,
@@ -269,6 +274,11 @@ fn load_settings(conn: &Connection) -> Result<PlayerSettings, ApiError> {
 
 fn clamp_preamp(preamp_db: f32) -> f32 {
     preamp_db.clamp(-MAX_PREAMP_DB, MAX_PREAMP_DB)
+}
+
+/// What the engine should play at.
+fn audible_volume(settings: &PlayerSettings) -> f32 {
+    if settings.muted { 0.0 } else { settings.volume }
 }
 
 fn gain_command(settings: &PlayerSettings) -> PlayerCommand {
@@ -533,7 +543,7 @@ impl Player {
         let settings = self.settings()?;
         started
             .send(&PlayerCommand::SetVolume {
-                volume: settings.volume,
+                volume: audible_volume(&settings),
             })
             .and_then(|()| started.send(&gain_command(&settings)))
             .and_then(|()| started.send(&eq_command(&settings.eq).map_err(|error| error.message)?))
@@ -603,6 +613,15 @@ impl Player {
             .events
             .emit(&CoreEvent::QueueChanged { replaced: true });
         Ok(())
+    }
+
+    /// Replaces the player playlist with the album a track is on, from its start.
+    pub fn play_album(&self, track_id: &str) -> Result<(), ApiError> {
+        let tracks = self
+            .shared
+            .db
+            .read(|conn| playlists::album_track_ids(conn, track_id))?;
+        self.play_tracks(&tracks, 0)
     }
 
     /// Plays an entry of the player playlist as it stands.
@@ -736,14 +755,29 @@ impl Player {
         Ok(settings)
     }
 
-    /// Sets the output gain, from 0 to 1.
+    /// Sets the output gain, from 0 to 1. Choosing a volume ends any mute.
     pub fn set_volume(&self, volume: f32) -> Result<PlayerSettings, ApiError> {
         let volume = volume.clamp(0.0, 1.0);
         // The engine first, because the database may be waiting on a scan.
         self.tell_running_engine(&PlayerCommand::SetVolume { volume });
+        self.shared.db.write(|conn| {
+            save_setting(conn, VOLUME_KEY, &volume.to_string())?;
+            save_setting(conn, MUTED_KEY, "false")
+        })?;
+        self.settings_changed()
+    }
+
+    pub fn set_muted(&self, muted: bool) -> Result<PlayerSettings, ApiError> {
+        let settings = PlayerSettings {
+            muted,
+            ..self.settings()?
+        };
+        self.tell_running_engine(&PlayerCommand::SetVolume {
+            volume: audible_volume(&settings),
+        });
         self.shared
             .db
-            .write(|conn| save_setting(conn, VOLUME_KEY, &volume.to_string()))?;
+            .write(|conn| save_setting(conn, MUTED_KEY, if muted { "true" } else { "false" }))?;
         self.settings_changed()
     }
 
@@ -1422,6 +1456,7 @@ mod tests {
             fixture.player.settings().unwrap(),
             PlayerSettings {
                 volume: 0.25,
+                muted: false,
                 replay_gain: ReplayGainMode::Album,
                 preamp_db: -3.5,
                 eq: EqSettings::default(),
@@ -1491,6 +1526,75 @@ mod tests {
                 .unwrap()
                 .contains(&CoreEvent::PlayerSettingsChanged { settings })
         );
+    }
+
+    #[test]
+    fn muting_silences_the_engine_and_keeps_the_volume_to_come_back_to() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        fixture.player.set_volume(0.5).unwrap();
+
+        let settings = fixture.player.set_muted(true).unwrap();
+        assert!(settings.muted);
+        assert_eq!(settings.volume, 0.5);
+        assert_eq!(
+            fixture.all_commands().last(),
+            Some(&PlayerCommand::SetVolume { volume: 0.0 })
+        );
+
+        fixture.player.set_muted(false).unwrap();
+        assert_eq!(
+            fixture.all_commands().last(),
+            Some(&PlayerCommand::SetVolume { volume: 0.5 })
+        );
+    }
+
+    #[test]
+    fn a_new_engine_starts_silent_if_muted() {
+        let fixture = fixture();
+        fixture.player.set_volume(0.5).unwrap();
+        fixture.player.set_muted(true).unwrap();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        assert_eq!(
+            fixture.all_commands()[0],
+            PlayerCommand::SetVolume { volume: 0.0 }
+        );
+    }
+
+    #[test]
+    fn choosing_a_volume_ends_a_mute() {
+        let fixture = fixture();
+        fixture.player.set_muted(true).unwrap();
+        let settings = fixture.player.set_volume(0.5).unwrap();
+        assert!(!settings.muted);
+        assert_eq!(fixture.player.settings().unwrap().volume, 0.5);
+    }
+
+    #[test]
+    fn playing_an_album_replaces_the_list_with_it() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["b".to_owned()], 0).unwrap();
+        fixture.player.play_album("b").unwrap();
+        assert_eq!(queue_titles(&fixture), ["a", "b", "c"]);
+        let commands = fixture.commands();
+        let PlayerCommand::Load { start_index, .. } = commands.last().unwrap() else {
+            panic!("expected a load, got {commands:?}");
+        };
+        assert_eq!(*start_index, 0);
+    }
+
+    #[test]
+    fn an_album_with_nothing_playable_is_reported() {
+        let fixture = fixture();
+        fixture
+            .db
+            .write(|conn| {
+                conn.execute("UPDATE tracks SET missing_since = 1", [])?;
+                Ok::<_, DbError>(())
+            })
+            .unwrap();
+        let error = fixture.player.play_album("a").unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgs);
     }
 
     fn bands(first: f32) -> Vec<f32> {

@@ -121,6 +121,13 @@
   {#if selection.size > 0}
     <span class="count selected">{countOf(selection.size, "track")} selected</span>
     <button class="primary" onclick={playSelection}>{actionLabel("player.playTracks")}</button>
+    {#if selection.size === 1}
+      <button
+        onclick={() => runAction("player.playAlbum", { trackId: [...selection.keys][0] as string })}
+      >
+        {actionLabel("player.playAlbum")}
+      </button>
+    {/if}
     <button onclick={() => runAction("queue.playNext", { trackIds: [...selection.keys] as string[] })}>
       {actionLabel("queue.playNext")}
     </button>
@@ -186,6 +193,13 @@
     min-height: calc(var(--size-row) + var(--space-sm));
     box-sizing: border-box;
     padding-block: var(--space-xs);
+    /* Never wraps, which would move the list. Off-screen buttons scroll into view. */
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .actions > button {
+    flex: none;
   }
 
   .count.selected {

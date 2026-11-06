@@ -212,6 +212,7 @@ commands![
     MovePlaylistItems,
     PlayTracks,
     PlayPlaylist,
+    PlayAlbum,
     PlayQueueEntry,
     GetQueueItems,
     AddToQueue,
@@ -225,6 +226,7 @@ commands![
     GetPlayerStatus,
     GetPlayerSettings,
     SetPlayerVolume,
+    SetPlayerMuted,
     SetPlayerGain,
     GetGainCoverage,
     SetPlayerEq,
@@ -620,6 +622,23 @@ impl Command for PlayPlaylist {
     }
 }
 
+/// Replaces the player playlist with the album a track is on, and plays it from its start.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlayAlbum {
+    pub track_id: String,
+}
+
+impl Command for PlayAlbum {
+    const NAME: &'static str = "player.playAlbum";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.play_album(&self.track_id)?;
+        Ok(core.player.status())
+    }
+}
+
 /// Plays one entry of the player playlist, leaving the list as it is.
 #[derive(Debug, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -999,6 +1018,22 @@ impl Command for SetPlayerVolume {
 
     fn run(self, core: &Core) -> Result<PlayerSettings, ApiError> {
         core.player.set_volume(self.volume)
+    }
+}
+
+/// Silences the output, keeping the volume to come back to. It is saved.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SetPlayerMuted {
+    pub muted: bool,
+}
+
+impl Command for SetPlayerMuted {
+    const NAME: &'static str = "player.setMuted";
+    type Output = PlayerSettings;
+
+    fn run(self, core: &Core) -> Result<PlayerSettings, ApiError> {
+        core.player.set_muted(self.muted)
     }
 }
 

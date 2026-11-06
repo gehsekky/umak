@@ -560,6 +560,8 @@ ReplayGain results, November 2026: gain changes on the audio thread at the exact
 
 The fixed chain runs on the audio thread as: ReplayGain and preamp, equalizer, plugin slots, limiter, then volume. The limiter has no lookahead, so it adds no latency and does not hold back the end of a track; it reacts within the frame that goes over and recovers over about 100 ms. With ReplayGain off, the equalizer flat or off, and no plugins, both stages are bypassed and samples are left exactly as decoded.
 
+Keyboard: Space plays or pauses, Ctrl+Left and Ctrl+Right change track, Shift+Left and Shift+Right skip 5 seconds, Ctrl+Up and Ctrl+Down change the volume, M mutes, and Ctrl+Q shows or hides the queue. In the queue, Delete removes and Alt+Up and Alt+Down move. Arrow chords stay with text boxes and sliders when they hold focus.
+
 Not in this phase unless asked for: crossfade, EBU R128 analysis, parametric EQ, AutoEq import, linear-phase mode, device selection, shuffle and repeat, album art, a waveform seek bar, and WASAPI exclusive output.
 
 Exit criteria:

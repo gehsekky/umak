@@ -19,7 +19,7 @@ export type ScanState = { id: string; kind: string; done: number; total: number 
 
 const QUEUE_OPEN_KEY = "umak.queueOpen";
 /** Below this width the queue covers the main view, so it starts closed. */
-const NARROW_WINDOW = "(max-width: 900px)";
+const NARROW_WINDOW = "(max-width: 1100px)";
 
 function initialQueueOpen(): boolean {
   try {

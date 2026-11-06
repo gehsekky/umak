@@ -187,7 +187,8 @@
       Home: 0,
       End: list.total - 1,
     };
-    if (event.key in steps && list.total > 0) {
+    // Ctrl with an arrow is a shortcut for the player, not movement in the list.
+    if (event.key in steps && list.total > 0 && !event.ctrlKey) {
       event.preventDefault();
       void moveTo(steps[event.key], event.shiftKey);
     } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {

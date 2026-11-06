@@ -1,7 +1,7 @@
 <script lang="ts">
   // The app's frame: named regions that registered views fill.
   import { onMount } from "svelte";
-  import { runShortcut, shortcutName } from "../actions/registry";
+  import { keyBelongsToElement, runShortcut, shortcutName } from "../actions/registry";
   import { player } from "../player/state.svelte";
   import { app } from "../state/app.svelte";
   import { viewsIn } from "./regions";
@@ -20,17 +20,10 @@
     return () => stops.forEach((stop) => stop());
   });
 
-  /** Plain keys belong to whatever is being typed in or pressed. */
-  function wantsPlainKeys(target: EventTarget | null): boolean {
-    return (
-      target instanceof HTMLElement &&
-      ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName)
-    );
-  }
-
   function keydown(event: KeyboardEvent): void {
     const name = shortcutName(event);
-    if (!name.includes("+") && wantsPlainKeys(event.target)) return;
+    const tag = event.target instanceof HTMLElement ? event.target.tagName : null;
+    if (keyBelongsToElement(name, tag)) return;
     if (runShortcut(name)) event.preventDefault();
   }
 </script>
@@ -110,7 +103,7 @@
   }
 
   /* No room beside the main view, so it goes over it. */
-  @media (max-width: 900px) {
+  @media (max-width: 1100px) {
     .queue {
       grid-area: main;
       justify-self: end;

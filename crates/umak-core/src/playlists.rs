@@ -314,6 +314,23 @@ pub fn set_player_tracks(conn: &Connection, track_ids: &[String]) -> Result<(), 
     Ok(())
 }
 
+/// The tracks of the album a track is on, in album order, leaving out missing files.
+pub fn album_track_ids(conn: &Connection, track_id: &str) -> Result<Vec<String>, ApiError> {
+    let album: i64 = conn
+        .prepare_cached("SELECT album_id FROM tracks WHERE public_id = ?1")?
+        .query_row([track_id], |row| row.get(0))
+        .optional()?
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "that track no longer exists"))?;
+    Ok(conn
+        .prepare_cached(
+            "SELECT public_id FROM tracks
+             WHERE album_id = ?1 AND missing_since IS NULL
+             ORDER BY disc_no, track_no, id",
+        )?
+        .query_map([album], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
 /// Replaces the player playlist with a copy of a saved playlist.
 pub fn copy_to_player(conn: &Connection, id: &str) -> Result<(), ApiError> {
     let source = internal_id(conn, id)?;
@@ -857,6 +874,48 @@ mod tests {
 
     fn names(ids: &[&str]) -> Vec<String> {
         ids.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    #[test]
+    fn an_album_lists_its_tracks_in_disc_and_track_order_without_missing_files() {
+        let fixture = fixture();
+        fixture
+            .run(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO albums (id, public_id, group_key, title, sort_title,
+                                         album_artist_display, album_artist_sort)
+                         VALUES (2, 'other', 'k2', 'Other', 'other', 'X', 'x');
+                     UPDATE tracks SET album_id = 2 WHERE public_id = 'd';
+                     UPDATE tracks SET disc_no = 2, track_no = 1 WHERE public_id = 'a';
+                     UPDATE tracks SET disc_no = 1, track_no = 2 WHERE public_id = 'b';
+                     UPDATE tracks SET disc_no = 1, track_no = 1 WHERE public_id = 'c';",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let ids = fixture.run(|conn| album_track_ids(conn, "a")).unwrap();
+        assert_eq!(ids, names(&["c", "b", "a"]));
+
+        fixture
+            .run(|conn| {
+                conn.execute(
+                    "UPDATE tracks SET missing_since = 1 WHERE public_id = 'b'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            fixture.run(|conn| album_track_ids(conn, "a")).unwrap(),
+            names(&["c", "a"])
+        );
+        assert_eq!(
+            fixture
+                .run(|conn| album_track_ids(conn, "nope"))
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
     }
 
     #[test]
