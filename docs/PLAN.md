@@ -396,6 +396,31 @@ The desktop UI talks to the core through the same command layer the server uses,
 8. Long operations are cancelable jobs that report progress as events, so any client can show them.
 9. Library reads run on a separate reader pool from writes, so concurrent clients never block the scanner.
 
+## Agent and smart-home control (nice to have)
+
+An AI agent or home hub could run Umak as one more client of the command layer, without screen control. This is not scheduled. It is deferred because it would not make development or testing faster: core logic is tested directly through the command layer, and the app is tested end to end through its debug port.
+
+**What it needs**
+
+- A background service that runs the core without a window, with the desktop app as one of its clients. This shares its work with the headless server mode.
+- A local API over HTTP, with a live event stream, generated from the `commands!` list and listening only on this machine by default.
+- A description of each command at runtime: its name, purpose and input and output formats.
+- An MCP server on top of the API, and a Home Assistant integration if that becomes the hub.
+- Per-client tokens and permissions, with reading and playback allowed by default and file changes needing separate permission. Bulk changes preview first and can be undone, and every action is logged with its client.
+
+**Missing controls**
+
+Volume, output device choice, queue editing, shuffle and repeat, browsing by album, artist and genre, filtered search, reading and setting ratings and play counts, and removing library folders. Some are planned for other phases. An agent needs each one as a command.
+
+**Rooms**
+
+Umak has one player and one output. In order of size, the options are one zone, one player per local sound device, and streaming to devices such as Sonos or Chromecast.
+
+**Keep these open when building other phases**
+
+- Keep the player behind the `PlayerBackend` interface when the engine moves in-process in phase 2, so it can move to a service later without changing callers.
+- Add new player state as commands and events, not as UI-only state.
+
 ## Conversion and visualization
 
 **Conversion**
@@ -519,6 +544,8 @@ Build in six phases, each ending in something usable. The 30k-track test library
 4. **Conversion:** FFmpeg job queue and presets, built as a reusable service. Exit: batch conversion with tags and art preserved.
 5. **Visualizations and polish:** FFT pipeline, visualizers, OS integration, scrobbling, installers.
 6. **Server (later):** OpenSubsonic through axum on top of the existing command layer, auth, streaming, transcoding, and a headless mode for the NAS. Exit: two third-party clients connect and play.
+
+Nice to have, not scheduled: agent and smart-home control. See "Agent and smart-home control".
 
 **Risks**
 
