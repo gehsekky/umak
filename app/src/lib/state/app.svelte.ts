@@ -6,13 +6,17 @@ import type { ImportPreview } from "../api/generated/ImportPreview";
 import type { ImportReport } from "../api/generated/ImportReport";
 import type { LibraryRoot } from "../api/generated/LibraryRoot";
 import type { Playlist } from "../api/generated/Playlist";
+import { describeEdit } from "../tags/plan";
 
 export type View =
   | { kind: "library" }
   | { kind: "folders" }
   | { kind: "import" }
   | { kind: "settings" }
-  | { kind: "playlist"; id: string };
+  | { kind: "playlist"; id: string }
+  | { kind: "tagEditor" }
+  | { kind: "tagReview"; id: string }
+  | { kind: "tagEdits" };
 
 /** A background job reading the library: a scan, or the scan inside an import. */
 export type ScanState = { id: string; kind: string; done: number; total: number };
@@ -46,6 +50,13 @@ class AppState {
   /** Increase when their contents change, so list views know to reload. */
   libraryVersion = $state(0);
   playlistsVersion = $state(0);
+  tagEditsVersion = $state(0);
+  /** A previewed batch not yet written or discarded. */
+  waitingEdit = $state<string | null>(null);
+  /** The batch being written, to report on when its job ends. */
+  writingEdit: string | null = null;
+  /** Where an edit started, to return to when it is done. */
+  editOrigin = $state<View>({ kind: "library" });
 
   readonly trackCount = $derived(this.roots.reduce((sum, root) => sum + root.trackCount, 0));
 
@@ -115,13 +126,22 @@ class AppState {
     }
   }
 
-  /** The tag editor reads a batch's results itself; only the shared progress ends here. */
+  /** The review screen shows a batch in full; this says how it went from anywhere else. */
   private async finishTagJob(id: string): Promise<void> {
     this.scan = null;
     this.libraryVersion++;
+    this.tagEditsVersion++;
     const job = (await call("jobs.list", {})).jobs.find((candidate) => candidate.id === id);
     if (job?.status === "failed") {
       this.fail(`Tag editing failed: ${job.error ?? "unknown error"}`);
+    }
+    const written = this.writingEdit;
+    if (job?.kind === "tagWrite" && written) {
+      this.writingEdit = null;
+      const edit = await call("tags.edits.get", { id: written });
+      const text = describeEdit(edit);
+      if (edit.failed > 0) this.fail(`Tag edit finished: ${text}`);
+      else this.notify(`Tag edit ${edit.status === "canceled" ? "canceled" : "finished"}: ${text}`);
     }
   }
 
@@ -137,6 +157,9 @@ class AppState {
       case "playlistsChanged":
         this.playlistsVersion++;
         void this.loadPlaylists();
+        break;
+      case "tagEditsChanged":
+        this.tagEditsVersion++;
         break;
       case "jobProgress":
         this.scan = { id: event.id, kind: event.kind, done: event.done, total: event.total };

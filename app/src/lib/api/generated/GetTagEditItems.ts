@@ -3,4 +3,8 @@
 /**
  * A page of a batch's files and what changes in each.
  */
-export type GetTagEditItems = { id: string, offset: number, limit: number, };
+export type GetTagEditItems = { id: string, 
+/**
+ * Only the files that were not, or may not have been, written.
+ */
+problems: boolean, offset: number, limit: number, };

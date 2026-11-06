@@ -44,6 +44,13 @@
   </button>
   <button
     class="item"
+    class:active={["tagEdits", "tagEditor", "tagReview"].includes(app.view.kind)}
+    onclick={() => runAction("nav.tagEdits")}
+  >
+    <span>{actionLabel("nav.tagEdits")}</span>
+  </button>
+  <button
+    class="item"
     class:active={app.view.kind === "settings"}
     onclick={() => runAction("nav.settings")}
   >

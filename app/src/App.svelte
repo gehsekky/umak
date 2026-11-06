@@ -11,6 +11,9 @@
   import SettingsView from "./lib/views/SettingsView.svelte";
   import Sidebar from "./lib/views/Sidebar.svelte";
   import StatusBar from "./lib/views/StatusBar.svelte";
+  import TagEditorView from "./lib/views/TagEditorView.svelte";
+  import TagHistoryView from "./lib/views/TagHistoryView.svelte";
+  import TagReviewView from "./lib/views/TagReviewView.svelte";
 
   registerAppActions();
   registerView("sidebar", { id: "navigation", component: Sidebar });
@@ -19,6 +22,9 @@
   registerView("main", { id: "folders", component: FoldersView });
   registerView("main", { id: "import", component: ImportView });
   registerView("main", { id: "settings", component: SettingsView });
+  registerView("main", { id: "tagEditor", component: TagEditorView });
+  registerView("main", { id: "tagReview", component: TagReviewView });
+  registerView("main", { id: "tagEdits", component: TagHistoryView });
   registerView("queue", { id: "queue", component: QueueView });
   registerView("transport", { id: "player", component: PlayerBar });
   registerView("status", { id: "status", component: StatusBar });

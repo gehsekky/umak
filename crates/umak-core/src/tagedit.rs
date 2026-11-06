@@ -112,6 +112,34 @@ pub struct TagEditItemPage {
     pub items: Vec<TagEditItem>,
 }
 
+/// What a track's file holds in every editable field, or why it could not be read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackTagValues {
+    pub track_id: String,
+    /// Null when the track is no longer in the library.
+    pub rel_path: Option<String>,
+    pub fields: Vec<FieldEdit>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct TrackTagValuesList {
+    pub tracks: Vec<TrackTagValues>,
+}
+
+const EDITABLE_FIELDS: [TagField; 9] = [
+    TagField::Title,
+    TagField::Album,
+    TagField::Artists,
+    TagField::AlbumArtists,
+    TagField::Composers,
+    TagField::Genres,
+    TagField::Year,
+    TagField::TrackNumber,
+    TagField::DiscNumber,
+];
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -143,6 +171,66 @@ pub enum Target {
 
 fn track_path(root: &str, rel_path: &str) -> PathBuf {
     Path::new(root).join(rel_path)
+}
+
+/// Reads the files themselves, because the library fills gaps for display: a track with no
+/// title tag shows its file name, and an album can be given an inferred artist. Those are not
+/// values to offer for editing.
+pub fn read_values(db: &Database, track_ids: &[String]) -> Result<TrackTagValuesList, ApiError> {
+    if track_ids.len() > MAX_PAGE as usize {
+        return Err(ApiError::new(
+            ErrorCode::InvalidArgs,
+            format!("at most {MAX_PAGE} tracks can be read at once"),
+        ));
+    }
+    let located: Vec<(String, Option<(String, String)>)> = db.read(|conn| {
+        let mut lookup = conn.prepare_cached(
+            "SELECT r.path, t.rel_path FROM tracks t
+             JOIN library_roots r ON r.id = t.root_id WHERE t.public_id = ?1",
+        )?;
+        track_ids
+            .iter()
+            .map(|id| {
+                let found = lookup
+                    .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .optional()?;
+                Ok((id.clone(), found))
+            })
+            .collect::<Result<_, ApiError>>()
+    })?;
+    let tracks = located
+        .into_iter()
+        .map(|(track_id, found)| {
+            let Some((root, rel_path)) = found else {
+                return TrackTagValues {
+                    track_id,
+                    rel_path: None,
+                    fields: Vec::new(),
+                    error: Some("this track is no longer in the library".to_owned()),
+                };
+            };
+            let (fields, error) = match read_tags(&track_path(&root, &rel_path)) {
+                Ok(tags) => (
+                    EDITABLE_FIELDS
+                        .iter()
+                        .map(|&field| FieldEdit {
+                            field,
+                            values: field_values(&tags, field),
+                        })
+                        .collect(),
+                    None,
+                ),
+                Err(error) => (Vec::new(), Some(describe(&error))),
+            };
+            TrackTagValues {
+                track_id,
+                rel_path: Some(rel_path),
+                fields,
+                error,
+            }
+        })
+        .collect();
+    Ok(TrackTagValuesList { tracks })
 }
 
 /// Checks a request and finds the tracks it names.
@@ -853,10 +941,12 @@ pub fn history(conn: &Connection, offset: u32, limit: u32) -> Result<TagEditPage
     Ok(TagEditPage { total, edits })
 }
 
-/// A batch's files, in the order they were asked for.
+/// A batch's files, in the order they were asked for. `problems` keeps only those that were
+/// not, or may not have been, written.
 pub fn items(
     conn: &Connection,
     edit_id: &str,
+    problems: bool,
     offset: u32,
     limit: u32,
 ) -> Result<TagEditItemPage, ApiError> {
@@ -865,15 +955,24 @@ pub fn items(
         .query_row([edit_id], |row| row.get(0))
         .optional()?
         .ok_or_else(not_found)?;
+    let shown = if problems {
+        format!(
+            "i.status IN ('{ITEM_BLOCKED}', '{ITEM_FAILED}', '{ITEM_SKIPPED}', '{ITEM_UNSURE}')"
+        )
+    } else {
+        "1".to_owned()
+    };
     let total = conn
-        .prepare_cached("SELECT count(*) FROM tag_edit_items WHERE edit_id = ?1")?
+        .prepare_cached(&format!(
+            "SELECT count(*) FROM tag_edit_items i WHERE i.edit_id = ?1 AND {shown}"
+        ))?
         .query_row([edit], |row| row.get(0))?;
-    let mut statement = conn.prepare_cached(
+    let mut statement = conn.prepare_cached(&format!(
         "SELECT i.position, t.public_id, t.rel_path, t.title, t.artist_display, i.status,
                 i.message, i.changes
          FROM tag_edit_items i JOIN tracks t ON t.id = i.track_id
-         WHERE i.edit_id = ?1 AND i.position >= ?2 ORDER BY i.position LIMIT ?3",
-    )?;
+         WHERE i.edit_id = ?1 AND {shown} ORDER BY i.position LIMIT ?3 OFFSET ?2"
+    ))?;
     let rows = statement.query_map(params![edit, offset, limit.min(MAX_PAGE)], |row| {
         let changes: String = row.get(7)?;
         Ok((
@@ -1028,7 +1127,7 @@ mod tests {
         fn items(&self, id: &str) -> Vec<Value> {
             let page = self.call(
                 "tags.edits.items",
-                json!({"id": id, "offset": 0, "limit": 100}),
+                json!({"id": id, "problems": false, "offset": 0, "limit": 100}),
             );
             page["items"].as_array().unwrap().clone()
         }
@@ -1047,6 +1146,74 @@ mod tests {
 
     const ONE: &[(&str, &str)] = &[("TIT2", "One"), ("TPE1", "Band"), ("TALB", "First")];
     const TWO: &[(&str, &str)] = &[("TIT2", "Two"), ("TPE1", "Band"), ("TALB", "First")];
+
+    #[test]
+    fn current_values_come_from_the_file_not_from_what_the_library_fills_in() {
+        let fixture = Fixture::new(&[
+            ("a/1.mp3", ONE),
+            ("a/no title.mp3", &[("TPE1", "Band")]),
+            ("a/gone.mp3", TWO),
+        ]);
+        let tracks = fixture.tracks();
+        let ids: Vec<String> = ["One", "no title", "Two"]
+            .iter()
+            .map(|title| {
+                tracks
+                    .iter()
+                    .find(|(_, found)| found == title)
+                    .unwrap()
+                    .0
+                    .clone()
+            })
+            .collect();
+        fs::remove_file(fixture.path("a/gone.mp3")).unwrap();
+        let mut asked: Vec<&str> = ids.iter().map(String::as_str).collect();
+        asked.push("not-a-track");
+
+        let list = fixture.call("tags.read", json!({"trackIds": asked}));
+
+        let tracks = list["tracks"].as_array().unwrap();
+        let value = |track: &Value, field: &str| {
+            track["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|found| found["field"] == field)
+                .unwrap()["values"]
+                .clone()
+        };
+        assert_eq!(tracks[0]["relPath"], "a/1.mp3");
+        assert_eq!(tracks[0]["error"], Value::Null);
+        assert_eq!(value(&tracks[0], "title"), json!(["One"]));
+        assert_eq!(value(&tracks[0], "album"), json!(["First"]));
+        assert_eq!(tracks[0]["fields"].as_array().unwrap().len(), 9);
+        // The list of the library shows the file's name, but the tag is empty.
+        assert_eq!(value(&tracks[1], "title"), json!([]));
+        assert_eq!(value(&tracks[1], "album"), json!([]));
+        assert_eq!(tracks[2]["error"], "this file is missing");
+        assert_eq!(tracks[3]["relPath"], Value::Null);
+        assert!(tracks[3]["error"].as_str().unwrap().contains("no longer"));
+    }
+
+    #[test]
+    fn a_batch_can_be_narrowed_to_the_files_with_problems() {
+        let fixture = Fixture::new(&[("a/1.mp3", ONE), ("a/2.mp3", TWO)]);
+        let ids = [fixture.track_id("One"), fixture.track_id("Two")];
+        fs::remove_file(fixture.path("a/2.mp3")).unwrap();
+        let edit = fixture.preview(&ids, "album", &["Second"]);
+        let page = fixture.call(
+            "tags.edits.items",
+            json!({"id": edit, "problems": true, "offset": 0, "limit": 100}),
+        );
+        assert_eq!(page["total"], 1);
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+        assert_eq!(page["items"][0]["relPath"], "a/2.mp3");
+        let past_it = fixture.call(
+            "tags.edits.items",
+            json!({"id": edit, "problems": true, "offset": 1, "limit": 100}),
+        );
+        assert_eq!(past_it["items"].as_array().unwrap().len(), 0);
+    }
 
     #[test]
     fn a_preview_shows_every_change_and_touches_nothing() {

@@ -47,6 +47,7 @@ import type { Playlist } from "./Playlist";
 import type { PlaylistList } from "./PlaylistList";
 import type { PlaylistPage } from "./PlaylistPage";
 import type { PreviewImport } from "./PreviewImport";
+import type { ReadTrackTags } from "./ReadTrackTags";
 import type { RemoveFromQueue } from "./RemoveFromQueue";
 import type { RemovePlaylistItems } from "./RemovePlaylistItems";
 import type { RenamePlaylist } from "./RenamePlaylist";
@@ -66,6 +67,7 @@ import type { TagEditItemPage } from "./TagEditItemPage";
 import type { TagEditJob } from "./TagEditJob";
 import type { TagEditPage } from "./TagEditPage";
 import type { TrackPage } from "./TrackPage";
+import type { TrackTagValuesList } from "./TrackTagValuesList";
 import type { UndoTagEdit } from "./UndoTagEdit";
 import type { WriteTagEdit } from "./WriteTagEdit";
 
@@ -111,6 +113,7 @@ export type CommandMap = {
   "library.export": { args: ExportLibrary; output: ExportSummary };
   "library.import.preview": { args: PreviewImport; output: ImportPreview };
   "library.import.start": { args: StartImport; output: JobRef };
+  "tags.read": { args: ReadTrackTags; output: TrackTagValuesList };
   "tags.preview.start": { args: StartTagPreview; output: TagEditJob };
   "tags.edits.get": { args: GetTagEdit; output: TagEdit };
   "tags.edits.items": { args: GetTagEditItems; output: TagEditItemPage };

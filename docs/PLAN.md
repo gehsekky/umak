@@ -188,6 +188,7 @@ The scanner assigns each track to an album using the first rule that applies. Gr
 - An ID3v1 or APE tag beside the main tag is kept in step, so another player does not find the old values there.
 - Undo history for tag changes. What a write replaces is saved exactly as the file held it, not through the tag model, which would turn "2001-05-03" into 2001 and lose the rest. An undo is a batch like any other, with its own preview, and leaves alone any file changed since.
 - A write goes ahead only if what it replaces is what the preview saw.
+- The tag editor starts from what the files hold, read a page at a time behind a form that is already usable, because the library fills gaps for display: a missing title shows the file's name. A field the person did not touch is never written. Each value has its own box, so nothing is split on a separator.
 
 **Cleanup tools**
 

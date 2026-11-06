@@ -6,6 +6,7 @@ import { pickExportFile, pickExportTarget, pickFolder } from "../platform/dialog
 import { playerClient } from "../player/client";
 import { player } from "../player/state.svelte";
 import { app } from "../state/app.svelte";
+import { tagDraft } from "../tags/current.svelte";
 import { onActionError, registerAction } from "./registry";
 
 const SKIP_MS = 5000;
@@ -42,6 +43,114 @@ export function registerAppActions(): void {
     label: "Audio",
     run: () => {
       app.view = { kind: "settings" };
+    },
+  });
+
+  registerAction({
+    id: "nav.tagEdits",
+    label: "Tag edits",
+    run: () => {
+      app.view = { kind: "tagEdits" };
+    },
+  });
+  registerAction({
+    id: "nav.tagEditor",
+    label: "Edit tags",
+    run: () => {
+      app.view = { kind: "tagEditor" };
+    },
+  });
+  registerAction({
+    id: "nav.tagReview",
+    label: "Tag edit",
+    run: ({ id }) => {
+      app.editOrigin = { kind: "tagEdits" };
+      app.view = { kind: "tagReview", id };
+    },
+  });
+
+  registerAction({
+    id: "tags.edit",
+    label: "Edit tags",
+    run: ({ trackIds }) => {
+      app.editOrigin = app.view;
+      app.view = { kind: "tagEditor" };
+      // Failures show in the form, which works without the values.
+      void tagDraft.open(trackIds);
+    },
+  });
+  registerAction({
+    id: "tags.preview",
+    label: "Preview changes",
+    run: async () => {
+      if (!tagDraft.changes) return;
+      const started = await call("tags.preview.start", { changes: tagDraft.changes });
+      tagDraft.editId = started.editId;
+      app.waitingEdit = started.editId;
+      app.view = { kind: "tagReview", id: started.editId };
+    },
+  });
+  registerAction({
+    id: "tags.write",
+    label: "Write",
+    run: async ({ id }) => {
+      app.writingEdit = id;
+      await call("tags.edits.write", { id });
+      app.waitingEdit = null;
+      if (tagDraft.editId === id) tagDraft.close();
+    },
+  });
+  registerAction({
+    id: "tags.discard",
+    label: "Discard",
+    run: async ({ id }) => {
+      await call("tags.edits.discard", { id });
+      app.waitingEdit = null;
+      if (tagDraft.editId === id) tagDraft.close();
+      app.view = app.editOrigin;
+    },
+  });
+  registerAction({
+    id: "tags.backToDraft",
+    label: "Back to editing",
+    run: async ({ id }) => {
+      await call("tags.edits.discard", { id });
+      app.waitingEdit = null;
+      tagDraft.editId = null;
+      app.view = { kind: "tagEditor" };
+    },
+  });
+  registerAction({
+    id: "tags.closeDraft",
+    label: "Cancel",
+    run: () => {
+      tagDraft.close();
+      app.view = app.editOrigin;
+    },
+  });
+  registerAction({
+    id: "tags.leaveReview",
+    label: "Done",
+    run: () => {
+      // A preview canceled from its own screen goes back to what was being edited.
+      if (app.view.kind === "tagReview" && tagDraft.editId === app.view.id) {
+        tagDraft.editId = null;
+        app.waitingEdit = null;
+        app.view = { kind: "tagEditor" };
+        return;
+      }
+      if (app.view.kind === "tagReview" && app.waitingEdit === app.view.id) app.waitingEdit = null;
+      app.view = app.editOrigin;
+    },
+  });
+  registerAction({
+    id: "tags.undo",
+    label: "Undo",
+    run: async ({ id }) => {
+      const started = await call("tags.edits.undo", { id });
+      app.waitingEdit = started.editId;
+      app.editOrigin = { kind: "tagEdits" };
+      app.view = { kind: "tagReview", id: started.editId };
     },
   });
 

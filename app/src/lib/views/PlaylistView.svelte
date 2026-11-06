@@ -149,6 +149,9 @@
       <button onclick={async () => runAction("queue.add", { trackIds: await selectedTrackIds() })}>
         {actionLabel("queue.add")}
       </button>
+      <button onclick={async () => runAction("tags.edit", { trackIds: await selectedTrackIds() })}>
+        {actionLabel("tags.edit")}
+      </button>
       <button onclick={() => move(-1)}>Move up</button>
       <button onclick={() => move(1)}>Move down</button>
       <button onclick={removeSelected}>{actionLabel("playlists.removeItems")}</button>

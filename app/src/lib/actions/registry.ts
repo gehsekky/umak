@@ -9,6 +9,9 @@ export type ActionMap = {
   "nav.folders": void;
   "nav.playlist": { id: string };
   "nav.settings": void;
+  "nav.tagEdits": void;
+  "nav.tagEditor": void;
+  "nav.tagReview": { id: string };
   "library.addFolder": void;
   "library.rescan": void;
   "library.cancelScan": void;
@@ -16,6 +19,14 @@ export type ActionMap = {
   "library.export": void;
   "library.chooseImport": void;
   "library.startImport": { path: string; roots: { id: string; path: string | null }[] };
+  "tags.edit": { trackIds: string[] };
+  "tags.preview": void;
+  "tags.write": { id: string };
+  "tags.discard": { id: string };
+  "tags.backToDraft": { id: string };
+  "tags.closeDraft": void;
+  "tags.leaveReview": void;
+  "tags.undo": { id: string };
   "playlists.startCreate": void;
   "playlists.create": { name: string };
   "playlists.rename": { id: string; name: string };

@@ -138,7 +138,7 @@ fn preview_and_write(
     let items = dispatch(
         core,
         "tags.edits.items",
-        json!({"id": edit, "offset": 0, "limit": 1000}),
+        json!({"id": edit, "problems": false, "offset": 0, "limit": 1000}),
     )
     .unwrap();
     for item in items["items"].as_array().unwrap() {

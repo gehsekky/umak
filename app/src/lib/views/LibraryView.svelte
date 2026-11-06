@@ -134,6 +134,9 @@
     <button onclick={() => runAction("queue.add", { trackIds: [...selection.keys] as string[] })}>
       {actionLabel("queue.add")}
     </button>
+    <button onclick={() => runAction("tags.edit", { trackIds: [...selection.keys] as string[] })}>
+      {actionLabel("tags.edit")}
+    </button>
     <select
       bind:value={addTarget}
       onchange={addSelection}

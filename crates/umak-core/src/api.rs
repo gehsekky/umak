@@ -25,7 +25,7 @@ use crate::player::{
 };
 use crate::playlists::{self, Playlist, PlaylistPage};
 use crate::scan::{self, ScanError, ScanOptions};
-use crate::tagedit::{self, TagEdit, TagEditItemPage, TagEditPage, TrackEdits};
+use crate::tagedit::{self, TagEdit, TagEditItemPage, TagEditPage, TrackEdits, TrackTagValuesList};
 use crate::transfer::{self, ExportSummary, ImportPreview, RootChoice};
 use crate::{AppInfo, app_info};
 
@@ -247,6 +247,7 @@ commands![
     ExportLibrary,
     PreviewImport,
     StartImport,
+    ReadTrackTags,
     StartTagPreview,
     GetTagEdit,
     GetTagEditItems,
@@ -966,6 +967,24 @@ fn start_tag_preview(
     Ok(TagEditJob { edit_id, job_id })
 }
 
+/// Reads what files hold now, for an editor to start from. It takes a page of tracks at a time
+/// and is not a job, so a long selection can load behind a form that is already in use, and
+/// can simply stop.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadTrackTags {
+    pub track_ids: Vec<String>,
+}
+
+impl Command for ReadTrackTags {
+    const NAME: &'static str = "tags.read";
+    type Output = TrackTagValuesList;
+
+    fn run(self, core: &Core) -> Result<TrackTagValuesList, ApiError> {
+        tagedit::read_values(&core.db, &self.track_ids)
+    }
+}
+
 /// Works out what tag changes would do, reading the files but not changing them. When the job
 /// finishes, the batch can be looked through and written, or discarded.
 #[derive(Debug, Deserialize, TS)]
@@ -1006,6 +1025,8 @@ impl Command for GetTagEdit {
 #[serde(deny_unknown_fields)]
 pub struct GetTagEditItems {
     pub id: String,
+    /// Only the files that were not, or may not have been, written.
+    pub problems: bool,
     pub offset: u32,
     pub limit: u32,
 }
@@ -1016,7 +1037,7 @@ impl Command for GetTagEditItems {
 
     fn run(self, core: &Core) -> Result<TagEditItemPage, ApiError> {
         core.db
-            .read(|conn| tagedit::items(conn, &self.id, self.offset, self.limit))
+            .read(|conn| tagedit::items(conn, &self.id, self.problems, self.offset, self.limit))
     }
 }
 
