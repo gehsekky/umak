@@ -16,8 +16,23 @@ export type View =
 /** A background job reading the library: a scan, or the scan inside an import. */
 export type ScanState = { id: string; kind: string; done: number; total: number };
 
+const QUEUE_OPEN_KEY = "umak.queueOpen";
+/** Below this width the queue covers the main view, so it starts closed. */
+const NARROW_WINDOW = "(max-width: 900px)";
+
+function initialQueueOpen(): boolean {
+  try {
+    const saved = localStorage.getItem(QUEUE_OPEN_KEY);
+    if (saved !== null) return saved === "true";
+  } catch {
+    // Storage can be unavailable; the panel just falls back to the default.
+  }
+  return !window.matchMedia(NARROW_WINDOW).matches;
+}
+
 class AppState {
   view = $state<View>({ kind: "library" });
+  queueOpen = $state(initialQueueOpen());
   roots = $state.raw<LibraryRoot[]>([]);
   playlists = $state.raw<Playlist[]>([]);
   scan = $state<ScanState | null>(null);
@@ -32,6 +47,15 @@ class AppState {
   playlistsVersion = $state(0);
 
   readonly trackCount = $derived(this.roots.reduce((sum, root) => sum + root.trackCount, 0));
+
+  setQueueOpen(open: boolean): void {
+    this.queueOpen = open;
+    try {
+      localStorage.setItem(QUEUE_OPEN_KEY, String(open));
+    } catch {
+      // Remembering this is only a convenience.
+    }
+  }
 
   notify(text: string): void {
     this.notice = { text, error: false };

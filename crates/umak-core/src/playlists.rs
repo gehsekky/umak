@@ -139,6 +139,15 @@ pub fn items(
     limit: u32,
 ) -> Result<PlaylistPage, ApiError> {
     let playlist = internal_id(conn, id)?;
+    items_of(conn, playlist, offset, limit)
+}
+
+fn items_of(
+    conn: &Connection,
+    playlist: i64,
+    offset: u32,
+    limit: u32,
+) -> Result<PlaylistPage, ApiError> {
     let sql = format!(
         "SELECT i.position, {TRACK_COLUMNS}
          FROM playlist_items i JOIN tracks AS t ON t.id = i.track_id
@@ -214,13 +223,37 @@ pub fn move_items(
     now: i64,
 ) -> Result<Playlist, ApiError> {
     let playlist = internal_id(conn, id)?;
-    let current: Vec<(i64, i64)> = conn
-        .prepare_cached(
-            "SELECT position, track_id FROM playlist_items WHERE playlist_id = ?1 ORDER BY position",
-        )?
-        .query_map([playlist], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<Result<_, _>>()?;
+    let current = rows_of(conn, playlist)?;
+    let reordered = reorder(&current, positions, before)?;
 
+    conn.prepare_cached("DELETE FROM playlist_items WHERE playlist_id = ?1")?
+        .execute([playlist])?;
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO playlist_items (playlist_id, position, track_id) VALUES (?1, ?2, ?3)",
+    )?;
+    for (index, (_, track)) in reordered.iter().enumerate() {
+        insert.execute(params![playlist, (index as i64 + 1) * POSITION_GAP, track])?;
+    }
+    touch(conn, playlist, now)?;
+    get(conn, playlist)
+}
+
+/// A playlist's entries in order, as position and track.
+fn rows_of(conn: &Connection, playlist: i64) -> rusqlite::Result<Vec<(i64, i64)>> {
+    conn.prepare_cached(
+        "SELECT position, track_id FROM playlist_items WHERE playlist_id = ?1 ORDER BY position",
+    )?
+    .query_map([playlist], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .collect()
+}
+
+/// The entries with those at `positions` moved together, in their current order, right
+/// before the entry at `before`, or to the end when `before` is `None`.
+fn reorder<T: Copy>(
+    current: &[(i64, T)],
+    positions: &[i64],
+    before: Option<i64>,
+) -> Result<Vec<(i64, T)>, ApiError> {
     let moving: HashSet<i64> = positions.iter().copied().collect();
     let known = |wanted: i64| current.iter().any(|(position, _)| *position == wanted);
     if positions.iter().any(|position| !known(*position))
@@ -254,17 +287,7 @@ pub fn move_items(
     };
     let mut reordered = kept;
     reordered.splice(insert_at..insert_at, moved);
-
-    conn.prepare_cached("DELETE FROM playlist_items WHERE playlist_id = ?1")?
-        .execute([playlist])?;
-    let mut insert = conn.prepare_cached(
-        "INSERT INTO playlist_items (playlist_id, position, track_id) VALUES (?1, ?2, ?3)",
-    )?;
-    for (index, (_, track)) in reordered.iter().enumerate() {
-        insert.execute(params![playlist, (index as i64 + 1) * POSITION_GAP, track])?;
-    }
-    touch(conn, playlist, now)?;
-    get(conn, playlist)
+    Ok(reordered)
 }
 
 fn player_id(conn: &Connection) -> rusqlite::Result<i64> {
@@ -303,6 +326,211 @@ pub fn copy_to_player(conn: &Connection, id: &str) -> Result<(), ApiError> {
     )?
     .execute([playlist, source])?;
     Ok(())
+}
+
+/// An edit of the player playlist: the new list, and where each entry was before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerEdit {
+    pub tracks: Vec<TrackEntry>,
+    pub origin: Vec<Option<usize>>,
+}
+
+/// One entry of the edited list. An entry that stays in place keeps its position.
+struct Edited {
+    from: Option<usize>,
+    track: i64,
+    stays: bool,
+}
+
+/// Gives every entry a position, keeping the ones it has and fitting the rest into the
+/// gaps. Returns `None` when a gap is too small, so the list needs renumbering.
+fn fit_positions(kept: &[Option<i64>]) -> Option<Vec<i64>> {
+    let mut fitted = Vec::with_capacity(kept.len());
+    let mut index = 0;
+    let mut previous = 0;
+    while index < kept.len() {
+        if let Some(position) = kept[index] {
+            fitted.push(position);
+            previous = position;
+            index += 1;
+            continue;
+        }
+        let run = kept[index..]
+            .iter()
+            .take_while(|entry| entry.is_none())
+            .count() as i64;
+        let step = match kept.get(index + run as usize) {
+            Some(Some(next)) => (next - previous) / (run + 1),
+            _ => POSITION_GAP,
+        };
+        if step < 1 {
+            return None;
+        }
+        for offset in 1..=run {
+            fitted.push(previous + step * offset);
+        }
+        previous += step * run;
+        index += run as usize;
+    }
+    Some(fitted)
+}
+
+/// Writes an edited list, touching only the entries that changed, so positions the UI
+/// holds stay good and a long list stays fast to edit.
+fn write_player_edit(
+    conn: &Connection,
+    playlist: i64,
+    current: &[(i64, i64)],
+    edited: Vec<Edited>,
+) -> Result<PlayerEdit, ApiError> {
+    let kept: Vec<Option<i64>> = edited
+        .iter()
+        .map(|entry| {
+            entry
+                .from
+                .filter(|_| entry.stays)
+                .map(|from| current[from].0)
+        })
+        .collect();
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO playlist_items (playlist_id, position, track_id) VALUES (?1, ?2, ?3)",
+    )?;
+    if let Some(fitted) = fit_positions(&kept) {
+        let staying: HashSet<i64> = kept.iter().flatten().copied().collect();
+        let mut delete = conn.prepare_cached(
+            "DELETE FROM playlist_items WHERE playlist_id = ?1 AND position = ?2",
+        )?;
+        for (position, _) in current {
+            if !staying.contains(position) {
+                delete.execute(params![playlist, position])?;
+            }
+        }
+        for ((entry, position), was) in edited.iter().zip(&fitted).zip(&kept) {
+            if was.is_none() {
+                insert.execute(params![playlist, position, entry.track])?;
+            }
+        }
+    } else {
+        conn.prepare_cached("DELETE FROM playlist_items WHERE playlist_id = ?1")?
+            .execute([playlist])?;
+        for (index, entry) in edited.iter().enumerate() {
+            insert.execute(params![
+                playlist,
+                (index as i64 + 1) * POSITION_GAP,
+                entry.track
+            ])?;
+        }
+    }
+    Ok(PlayerEdit {
+        tracks: player_entries(conn)?,
+        origin: edited.iter().map(|entry| entry.from).collect(),
+    })
+}
+
+/// Inserts tracks at an index of the player playlist, or at the end. Unknown tracks fail
+/// the whole change.
+pub fn insert_into_player(
+    conn: &Connection,
+    track_ids: &[String],
+    at: Option<usize>,
+) -> Result<PlayerEdit, ApiError> {
+    let playlist = player_id(conn)?;
+    let current = rows_of(conn, playlist)?;
+    let at = at.unwrap_or(current.len()).min(current.len());
+    let mut track_id = conn.prepare_cached("SELECT id FROM tracks WHERE public_id = ?1")?;
+    let mut added = Vec::with_capacity(track_ids.len());
+    for public_id in track_ids {
+        let track: i64 = track_id
+            .query_row([public_id], |row| row.get(0))
+            .optional()?
+            .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "that track no longer exists"))?;
+        added.push(Edited {
+            from: None,
+            track,
+            stays: false,
+        });
+    }
+    let existing = |range: std::ops::Range<usize>| {
+        current[range.clone()]
+            .iter()
+            .zip(range)
+            .map(|((_, track), from)| Edited {
+                from: Some(from),
+                track: *track,
+                stays: true,
+            })
+    };
+    let edited = existing(0..at)
+        .chain(added)
+        .chain(existing(at..current.len()))
+        .collect();
+    write_player_edit(conn, playlist, &current, edited)
+}
+
+/// Removes entries from the player playlist. Positions already gone are ignored.
+pub fn remove_from_player(conn: &Connection, positions: &[i64]) -> Result<PlayerEdit, ApiError> {
+    let playlist = player_id(conn)?;
+    let current = rows_of(conn, playlist)?;
+    let removing: HashSet<i64> = positions.iter().copied().collect();
+    let edited = current
+        .iter()
+        .enumerate()
+        .filter(|(_, (position, _))| !removing.contains(position))
+        .map(|(from, (_, track))| Edited {
+            from: Some(from),
+            track: *track,
+            stays: true,
+        })
+        .collect();
+    write_player_edit(conn, playlist, &current, edited)
+}
+
+/// Moves entries of the player playlist together, as `move_items` does.
+pub fn move_in_player(
+    conn: &Connection,
+    positions: &[i64],
+    before: Option<i64>,
+) -> Result<PlayerEdit, ApiError> {
+    let playlist = player_id(conn)?;
+    let current = rows_of(conn, playlist)?;
+    let indexed: Vec<(i64, usize)> = current
+        .iter()
+        .enumerate()
+        .map(|(from, (position, _))| (*position, from))
+        .collect();
+    let moving: HashSet<i64> = positions.iter().copied().collect();
+    let edited = reorder(&indexed, positions, before)?
+        .into_iter()
+        .map(|(position, from)| Edited {
+            from: Some(from),
+            track: current[from].1,
+            stays: !moving.contains(&position),
+        })
+        .collect();
+    write_player_edit(conn, playlist, &current, edited)
+}
+
+pub fn clear_player(conn: &Connection) -> Result<PlayerEdit, ApiError> {
+    let playlist = player_id(conn)?;
+    let current = rows_of(conn, playlist)?;
+    write_player_edit(conn, playlist, &current, Vec::new())
+}
+
+pub fn player_items(conn: &Connection, offset: u32, limit: u32) -> Result<PlaylistPage, ApiError> {
+    items_of(conn, player_id(conn)?, offset, limit)
+}
+
+/// Saves a copy of the player playlist as a new playlist.
+pub fn save_player_as(conn: &Connection, name: &str, now: i64) -> Result<Playlist, ApiError> {
+    let source = player_id(conn)?;
+    let saved = create(conn, name, now)?;
+    let target = internal_id(conn, &saved.id)?;
+    conn.prepare_cached(
+        "INSERT INTO playlist_items (playlist_id, position, track_id)
+         SELECT ?1, position, track_id FROM playlist_items WHERE playlist_id = ?2",
+    )?
+    .execute([target, source])?;
+    get(conn, target)
 }
 
 /// The player playlist with each file's full path, for the engine. Paths stop here:
@@ -595,6 +823,159 @@ mod tests {
                 .unwrap();
             assert_eq!(fixture.titles(&list.id), expected, "{moving:?} {before:?}");
         }
+    }
+
+    impl Fixture {
+        fn set_player(&self, tracks: &[&str]) {
+            let ids: Vec<String> = tracks.iter().map(|id| (*id).to_owned()).collect();
+            self.run(|conn| set_player_tracks(conn, &ids)).unwrap();
+        }
+
+        fn player(&self) -> Vec<(i64, String)> {
+            self.run(|conn| player_items(conn, 0, MAX_PAGE))
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|item| (item.position, item.track.title))
+                .collect()
+        }
+
+        fn player_titles(&self) -> Vec<String> {
+            self.player().into_iter().map(|(_, title)| title).collect()
+        }
+    }
+
+    fn names(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    #[test]
+    fn tracks_go_to_the_end_or_right_after_an_index_of_the_player_playlist() {
+        let fixture = fixture();
+        fixture.set_player(&["a", "b"]);
+        let edit = fixture
+            .run(|conn| insert_into_player(conn, &names(&["c"]), None))
+            .unwrap();
+        assert_eq!(edit.origin, [Some(0), Some(1), None]);
+        assert_eq!(edit.tracks.len(), 3);
+        assert_eq!(fixture.player_titles(), names(&["a", "b", "c"]));
+
+        let edit = fixture
+            .run(|conn| insert_into_player(conn, &names(&["d", "a"]), Some(1)))
+            .unwrap();
+        assert_eq!(edit.origin, [Some(0), None, None, Some(1), Some(2)]);
+        assert_eq!(fixture.player_titles(), names(&["a", "d", "a", "b", "c"]));
+    }
+
+    #[test]
+    fn an_unknown_track_changes_nothing_in_the_player_playlist() {
+        let fixture = fixture();
+        fixture.set_player(&["a"]);
+        let result = fixture.db.write(|conn| {
+            let tx = conn.transaction()?;
+            let edit = insert_into_player(&tx, &names(&["b", "nope"]), None)?;
+            tx.commit()?;
+            Ok::<_, ApiError>(edit)
+        });
+        assert_eq!(result.unwrap_err().code, ErrorCode::NotFound);
+        assert_eq!(fixture.player_titles(), names(&["a"]));
+    }
+
+    #[test]
+    fn entries_the_edit_did_not_touch_keep_their_positions() {
+        let fixture = fixture();
+        fixture.set_player(&["a", "b", "c", "d"]);
+        let before = fixture.player();
+
+        fixture
+            .run(|conn| insert_into_player(conn, &names(&["a"]), Some(2)))
+            .unwrap();
+        let after = fixture.player();
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[1], before[1]);
+        assert_eq!(after[3], before[2]);
+        assert_eq!(after[4], before[3]);
+
+        // Moving the last entry to the front leaves the rest where they are.
+        let last = after[4].0;
+        let first = after[0].0;
+        let edit = fixture
+            .run(|conn| move_in_player(conn, &[last], Some(first)))
+            .unwrap();
+        assert_eq!(edit.origin, [Some(4), Some(0), Some(1), Some(2), Some(3)]);
+        let moved = fixture.player();
+        assert_eq!(moved[0].1, "d");
+        assert_eq!(moved[1..], after[..4]);
+    }
+
+    #[test]
+    fn many_inserts_at_one_spot_renumber_when_the_gap_runs_out() {
+        let fixture = fixture();
+        fixture.set_player(&["a", "b"]);
+        let mut expected = names(&["a", "b"]);
+        for count in 0..40 {
+            let track = ["c", "d"][count % 2];
+            fixture
+                .run(|conn| insert_into_player(conn, &names(&[track]), Some(1)))
+                .unwrap();
+            expected.insert(1, track.to_owned());
+            assert_eq!(fixture.player_titles(), expected, "after {count} inserts");
+        }
+    }
+
+    #[test]
+    fn positions_fit_into_gaps_or_report_that_they_cannot() {
+        assert_eq!(fit_positions(&[]), Some(vec![]));
+        assert_eq!(
+            fit_positions(&[None, None]),
+            Some(vec![POSITION_GAP, 2 * POSITION_GAP])
+        );
+        assert_eq!(
+            fit_positions(&[Some(100), None, None, Some(400)]),
+            Some(vec![100, 200, 300, 400])
+        );
+        assert_eq!(
+            fit_positions(&[Some(100), None]),
+            Some(vec![100, 100 + POSITION_GAP])
+        );
+        assert_eq!(fit_positions(&[Some(1), None, Some(2)]), None);
+    }
+
+    #[test]
+    fn removing_and_clearing_report_where_entries_went() {
+        let fixture = fixture();
+        fixture.set_player(&["a", "b", "c"]);
+        let positions = fixture.player();
+        let edit = fixture
+            .run(|conn| remove_from_player(conn, &[positions[1].0, 999_999]))
+            .unwrap();
+        assert_eq!(edit.origin, [Some(0), Some(2)]);
+        assert_eq!(fixture.player_titles(), names(&["a", "c"]));
+
+        let edit = fixture.run(clear_player).unwrap();
+        assert!(edit.tracks.is_empty() && edit.origin.is_empty());
+        assert!(fixture.player_titles().is_empty());
+    }
+
+    #[test]
+    fn a_stale_position_is_refused_when_moving_in_the_player_playlist() {
+        let fixture = fixture();
+        fixture.set_player(&["a", "b"]);
+        let result = fixture.run(|conn| move_in_player(conn, &[999_999], None));
+        assert_eq!(result.unwrap_err().code, ErrorCode::Conflict);
+        assert_eq!(fixture.player_titles(), names(&["a", "b"]));
+    }
+
+    #[test]
+    fn the_player_playlist_saves_as_an_independent_copy() {
+        let fixture = fixture();
+        fixture.set_player(&["a", "b"]);
+        let saved = fixture.run(|conn| save_player_as(conn, "Kept", 5)).unwrap();
+        assert_eq!(saved.track_count, 2);
+        assert_eq!(fixture.titles(&saved.id), names(&["a", "b"]));
+
+        fixture.run(clear_player).unwrap();
+        assert_eq!(fixture.titles(&saved.id), names(&["a", "b"]));
     }
 
     #[test]

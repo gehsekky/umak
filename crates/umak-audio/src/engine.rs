@@ -235,6 +235,7 @@ impl Worker {
                 self.tracks = tracks;
                 self.start_track(start_index, start_ms);
             }
+            PlayerCommand::EditList { tracks, origin } => self.edit_list(tracks, &origin),
             PlayerCommand::Play => match (self.state, self.index) {
                 (PlaybackState::Paused, _) => {
                     self.shared.set_paused(false);
@@ -409,6 +410,82 @@ impl Worker {
         }
     }
 
+    /// Starts a track over from a position, staying paused if playback was paused.
+    fn restart_track(&mut self, index: usize, ms: u64) {
+        let paused = self.state == PlaybackState::Paused;
+        self.start_track(index, ms);
+        if paused && self.state == PlaybackState::Playing {
+            self.shared.set_paused(true);
+            self.set_state(PlaybackState::Paused);
+        }
+    }
+
+    /// Replaces the list. Audio keeps flowing unless the edit changes what is already
+    /// queued, which can only be discarded along with the current track's queued audio,
+    /// so then the current track resumes from where it is.
+    fn edit_list(&mut self, tracks: Vec<TrackEntry>, origin: &[Option<usize>]) {
+        let mut moved_to = vec![None; self.tracks.len()];
+        for (new, old) in origin.iter().enumerate() {
+            if let Some(slot) = old.and_then(|old| moved_to.get_mut(old)) {
+                *slot = Some(new);
+            }
+        }
+        let Some(old) = self.index else {
+            self.tracks = tracks;
+            return;
+        };
+
+        let Some(current) = moved_to.get(old).copied().flatten() else {
+            // The current track is gone, so the one that followed it takes over.
+            let following = moved_to.iter().skip(old + 1).find_map(|new| *new);
+            self.tracks = tracks;
+            if self.state == PlaybackState::Stopped {
+                self.index = following;
+                self.emit_state();
+            } else {
+                self.restart_track(following.unwrap_or(usize::MAX), 0);
+            }
+            return;
+        };
+
+        let mut ahead: Vec<usize> = self.upcoming.iter().map(|join| join.index).collect();
+        if let Some(feed) = &self.feed
+            && feed.index != old
+            && ahead.last() != Some(&feed.index)
+        {
+            ahead.push(feed.index);
+        }
+        let unchanged = ahead
+            .iter()
+            .enumerate()
+            .all(|(offset, was)| moved_to[*was] == Some(current + 1 + offset));
+        self.tracks = tracks;
+        self.index = Some(current);
+        if !unchanged {
+            let position = self.position_ms();
+            self.restart_track(current, position);
+            return;
+        }
+
+        for join in &mut self.upcoming {
+            join.index = moved_to[join.index].unwrap_or(join.index);
+        }
+        if let Some(feed) = &mut self.feed {
+            feed.index = moved_to[feed.index].unwrap_or(feed.index);
+        } else if self.playing.is_some() {
+            // Decoding had reached the end of the list, and there may be more now.
+            if let Some((index, decoder)) = self.open_from(current + ahead.len() + 1, 0) {
+                self.feed = Some(Feed {
+                    index,
+                    decoder,
+                    announced: false,
+                });
+                self.converter_start = self.join_at.unwrap_or(self.converter_start);
+            }
+        }
+        self.emit_state();
+    }
+
     fn seek(&mut self, ms: u64) {
         let (Some(index), Some(_)) = (self.index, &self.playing) else {
             self.flush();
@@ -422,12 +499,7 @@ impl Worker {
             self.upcoming.is_empty() && self.feed.as_ref().is_some_and(|feed| feed.index == index);
         if !still_decoding {
             // Its decoder is gone: the next track is already being decoded.
-            let paused = self.state == PlaybackState::Paused;
-            self.start_track(index, ms);
-            if paused && self.state == PlaybackState::Playing {
-                self.shared.set_paused(true);
-                self.set_state(PlaybackState::Paused);
-            }
+            self.restart_track(index, ms);
             return;
         }
 

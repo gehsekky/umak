@@ -5,6 +5,7 @@
   import type { PlaylistItem } from "../api/generated/PlaylistItem";
   import { countOf, formatTotalTime } from "../lists/format";
   import { PagedList, type Source } from "../lists/pagedList.svelte";
+  import { planStep } from "../lists/reorder";
   import { Selection } from "../lists/selection.svelte";
   import TrackTable from "../lists/TrackTable.svelte";
   import { app } from "../state/app.svelte";
@@ -70,36 +71,24 @@
     renaming = false;
   }
 
-  /** Finds which rows are selected. Positions alone do not say where they are. */
-  async function selectedIndexes(): Promise<{ all: number[]; chosen: number[] }> {
-    const all = (await list.keysInRange(0, list.total)) as number[];
-    const chosen = all.flatMap((position, index) => (selection.has(position) ? [index] : []));
-    return { all, chosen };
-  }
-
   /** Moves the selected rows up or down by one, keeping them together and selected. */
   async function move(direction: -1 | 1): Promise<void> {
-    const { all, chosen } = await selectedIndexes();
-    if (chosen.length === 0) return;
-    const first = chosen[0];
-    const last = chosen[chosen.length - 1];
-    const before = direction < 0 ? all[first - 1] : all[last + 2];
-    if (direction < 0 && first === 0) return;
-    if (direction > 0 && last === all.length - 1) return;
+    const all = (await list.keysInRange(0, list.total)) as number[];
+    const plan = planStep(all, (position) => selection.has(position), direction);
+    if (!plan) return;
+    const { positions, before, newStart } = plan;
+    if (!(await runAction("playlists.moveItems", { id, positions, before }))) return;
 
-    const positions = chosen.map((index) => all[index]);
-    const moved = await runAction("playlists.moveItems", {
-      id,
-      positions,
-      before: before ?? null,
-    });
-    if (!moved) return;
-
-    const newStart = direction < 0 ? first - 1 : last + 2 - chosen.length;
     await list.reload();
-    const keys = await list.keysInRange(newStart, newStart + chosen.length);
+    const keys = await list.keysInRange(newStart, newStart + positions.length);
     selection.setRange(keys, newStart);
     selection.anchor = newStart;
+  }
+
+  /** The selected rows' tracks, in list order. Entries are selected by position. */
+  async function selectedTrackIds(): Promise<string[]> {
+    const rows = await list.rowsInRange(0, list.total);
+    return rows.filter((item) => selection.has(item.position)).map((item) => item.track.id);
   }
 
   async function removeSelected(): Promise<void> {
@@ -152,6 +141,14 @@
   <div class="toolbar">
     {#if selection.size > 0}
       <span class="meta">{countOf(selection.size, "track")} selected</span>
+      <button
+        onclick={async () => runAction("queue.playNext", { trackIds: await selectedTrackIds() })}
+      >
+        {actionLabel("queue.playNext")}
+      </button>
+      <button onclick={async () => runAction("queue.add", { trackIds: await selectedTrackIds() })}>
+        {actionLabel("queue.add")}
+      </button>
       <button onclick={() => move(-1)}>Move up</button>
       <button onclick={() => move(1)}>Move down</button>
       <button onclick={removeSelected}>{actionLabel("playlists.removeItems")}</button>
@@ -216,6 +213,7 @@
   }
 
   .toolbar {
+    flex-wrap: wrap;
     display: flex;
     align-items: center;
     gap: var(--space-sm);

@@ -112,15 +112,21 @@
     }}
   />
   <button class:on={sort.sort === "added"} onclick={toggleRecent}>Recently added</button>
-  <span class="count">
-    {#if selection.size > 0}
-      {countOf(selection.size, "track")} selected
-    {:else if list.ready}
-      {countOf(list.total, "track")}
-    {/if}
-  </span>
+  <span class="count">{list.ready ? countOf(list.total, "track") : ""}</span>
+</div>
+
+<!-- Always here, so selecting a row cannot shift the list between the two clicks of a
+     double-click, whatever the window's width. -->
+<div class="toolbar actions">
   {#if selection.size > 0}
+    <span class="count selected">{countOf(selection.size, "track")} selected</span>
     <button class="primary" onclick={playSelection}>{actionLabel("player.playTracks")}</button>
+    <button onclick={() => runAction("queue.playNext", { trackIds: [...selection.keys] as string[] })}>
+      {actionLabel("queue.playNext")}
+    </button>
+    <button onclick={() => runAction("queue.add", { trackIds: [...selection.keys] as string[] })}>
+      {actionLabel("queue.add")}
+    </button>
     <select
       bind:value={addTarget}
       onchange={addSelection}
@@ -134,6 +140,8 @@
         <option value={playlist.id}>{playlist.name}</option>
       {/each}
     </select>
+  {:else}
+    <span class="count selected">Select tracks to play them, queue them or add them to a playlist.</span>
   {/if}
 </div>
 
@@ -171,6 +179,25 @@
     gap: var(--space-sm);
     padding: var(--space-sm) var(--space-md);
     border-bottom: 1px solid var(--color-border);
+  }
+
+  .actions {
+    /* The height with its buttons, so the list stays put with or without them. */
+    min-height: calc(var(--size-row) + var(--space-sm));
+    box-sizing: border-box;
+    padding-block: var(--space-xs);
+  }
+
+  .count.selected {
+    margin-left: 0;
+    margin-right: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  select {
+    min-width: 0;
+    flex: 0 1 auto;
   }
 
   .search {

@@ -50,6 +50,13 @@
       <MainView />
     {/if}
   </main>
+  {#if app.queueOpen}
+    <aside class="queue" aria-label="Queue">
+      {#each viewsIn("queue") as view (view.id)}
+        <view.component />
+      {/each}
+    </aside>
+  {/if}
   <section class="transport" aria-label="Player">
     {#each viewsIn("transport") as view (view.id)}
       <view.component />
@@ -65,12 +72,12 @@
 <style>
   .shell {
     display: grid;
-    grid-template-columns: var(--size-sidebar) minmax(0, 1fr);
+    grid-template-columns: var(--size-sidebar) minmax(0, 1fr) auto;
     grid-template-rows: minmax(0, 1fr) auto auto;
     grid-template-areas:
-      "sidebar main"
-      "transport transport"
-      "status status";
+      "sidebar main queue"
+      "transport transport transport"
+      "status status status";
     height: 100%;
   }
 
@@ -88,6 +95,28 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    /* The page itself never scrolls sideways. */
+    overflow: hidden;
+  }
+
+  .queue {
+    grid-area: queue;
+    width: var(--size-queue);
+    background: var(--color-surface);
+    border-left: 1px solid var(--color-border);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  /* No room beside the main view, so it goes over it. */
+  @media (max-width: 900px) {
+    .queue {
+      grid-area: main;
+      justify-self: end;
+      max-width: 100%;
+      z-index: 2;
+    }
   }
 
   .transport {

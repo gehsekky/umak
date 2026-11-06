@@ -16,7 +16,7 @@ use umak_audio::protocol::{PlaybackState, PlayerCommand, PlayerEvent, TrackEntry
 use crate::api::{ApiError, CoreEvent, ErrorCode, EventSink};
 use crate::db::{Database, DbError};
 use crate::library::{TRACK_COLUMNS, TrackRow};
-use crate::playlists;
+use crate::playlists::{self, PlayerEdit, PlaylistPage};
 
 /// How much playback can be lost if the app ends without warning.
 const SAVE_POSITION_EVERY_MS: u64 = 5000;
@@ -239,10 +239,35 @@ impl Shared {
     }
 }
 
+/// Where a saved place goes after an edit. If its entry was removed, the place moves to
+/// the start of the entry that followed it, which is what playback would do.
+fn moved_place(
+    origin: &[Option<usize>],
+    index: Option<u32>,
+    position_ms: u64,
+) -> (Option<u32>, u64) {
+    let Some(index) = index.map(|index| index as usize) else {
+        return (None, 0);
+    };
+    if let Some(new) = origin.iter().position(|from| *from == Some(index)) {
+        return (Some(new as u32), position_ms);
+    }
+    let following = origin
+        .iter()
+        .enumerate()
+        .filter(|(_, from)| from.is_some_and(|from| from > index))
+        .min_by_key(|(_, from)| **from)
+        .map(|(new, _)| new as u32);
+    (following, 0)
+}
+
 pub struct Player {
     shared: Arc<Shared>,
     backend: Mutex<Option<Box<dyn PlayerBackend>>>,
     factory: Mutex<BackendFactory>,
+    /// Held across a change to the list and its message to the engine, because an edit
+    /// only makes sense applied to the list before it.
+    list: Mutex<()>,
 }
 
 impl Player {
@@ -258,6 +283,7 @@ impl Player {
             }),
             backend: Mutex::new(None),
             factory: Mutex::new(factory),
+            list: Mutex::new(()),
         }
     }
 
@@ -315,6 +341,7 @@ impl Player {
 
     /// Replaces the player playlist with these tracks and plays from `start`.
     pub fn play_tracks(&self, track_ids: &[String], start: u32) -> Result<(), ApiError> {
+        let _list = lock(&self.list);
         let start = Self::checked_start(track_ids.len(), start)?;
         let tracks = self.shared.db.write(|conn| {
             let tx = conn.transaction()?;
@@ -323,12 +350,17 @@ impl Player {
             tx.commit()?;
             Ok::<_, ApiError>(tracks)
         })?;
-        self.load(tracks, start, 0)
+        self.load(tracks, start, 0)?;
+        self.shared
+            .events
+            .emit(&CoreEvent::QueueChanged { replaced: true });
+        Ok(())
     }
 
     /// Copies a saved playlist into the player playlist and plays from `start`. Later
     /// edits to the player playlist do not change the saved one.
     pub fn play_playlist(&self, id: &str, start: u32) -> Result<(), ApiError> {
+        let _list = lock(&self.list);
         let tracks = self.shared.db.write(|conn| {
             let tx = conn.transaction()?;
             playlists::copy_to_player(&tx, id)?;
@@ -337,7 +369,102 @@ impl Player {
             Ok::<_, ApiError>(tracks)
         })?;
         let start = Self::checked_start(tracks.len(), start)?;
+        self.load(tracks, start, 0)?;
+        self.shared
+            .events
+            .emit(&CoreEvent::QueueChanged { replaced: true });
+        Ok(())
+    }
+
+    /// Plays an entry of the player playlist as it stands.
+    pub fn play_index(&self, index: u32) -> Result<(), ApiError> {
+        let _list = lock(&self.list);
+        let tracks = self.shared.db.read(playlists::player_entries)?;
+        let start = Self::checked_start(tracks.len(), index)?;
         self.load(tracks, start, 0)
+    }
+
+    /// Where the current track is in the list, whether or not an engine holds it.
+    fn current_index(&self, conn: &Connection) -> Result<Option<u32>, ApiError> {
+        if self.shared.loaded.load(Ordering::SeqCst) {
+            Ok(lock(&self.shared.status).index)
+        } else {
+            Ok(playlists::player_position(conn)?.0)
+        }
+    }
+
+    /// Changes the player playlist while what is playing carries on.
+    fn edit(
+        &self,
+        change: impl FnOnce(&Connection) -> Result<PlayerEdit, ApiError>,
+    ) -> Result<(), ApiError> {
+        let _list = lock(&self.list);
+        let loaded = self.shared.loaded.load(Ordering::SeqCst);
+        let edit = self.shared.db.write(|conn| {
+            let tx = conn.transaction()?;
+            let edit = change(&tx)?;
+            if !loaded {
+                // No engine holds the list, so the saved place has to follow the edit.
+                let (index, position_ms) = playlists::player_position(&tx)?;
+                let (index, position_ms) = moved_place(&edit.origin, index, position_ms);
+                playlists::save_player_position(&tx, index, position_ms)?;
+            }
+            tx.commit()?;
+            Ok::<_, ApiError>(edit)
+        })?;
+        let status = {
+            let mut status = lock(&self.shared.status);
+            status.count = edit.tracks.len() as u32;
+            // The engine confirms this, but another edit may come first.
+            status.index = moved_place(&edit.origin, status.index, 0).0;
+            status.clone()
+        };
+        if loaded {
+            self.send(&PlayerCommand::EditList {
+                tracks: edit.tracks,
+                origin: edit.origin,
+            })?;
+        }
+        self.shared
+            .events
+            .emit(&CoreEvent::QueueChanged { replaced: false });
+        self.shared.events.emit(&CoreEvent::PlayerChanged {
+            status: Box::new(status),
+        });
+        Ok(())
+    }
+
+    pub fn queue_items(&self, offset: u32, limit: u32) -> Result<PlaylistPage, ApiError> {
+        self.shared
+            .db
+            .read(|conn| playlists::player_items(conn, offset, limit))
+    }
+
+    /// Adds tracks to the end of the player playlist.
+    pub fn add_to_queue(&self, track_ids: &[String]) -> Result<(), ApiError> {
+        self.edit(|conn| playlists::insert_into_player(conn, track_ids, None))
+    }
+
+    /// Inserts tracks right after the current one.
+    pub fn play_next(&self, track_ids: &[String]) -> Result<(), ApiError> {
+        self.edit(|conn| {
+            let at = self
+                .current_index(conn)?
+                .map_or(0, |index| index as usize + 1);
+            playlists::insert_into_player(conn, track_ids, Some(at))
+        })
+    }
+
+    pub fn remove_from_queue(&self, positions: &[i64]) -> Result<(), ApiError> {
+        self.edit(|conn| playlists::remove_from_player(conn, positions))
+    }
+
+    pub fn move_in_queue(&self, positions: &[i64], before: Option<i64>) -> Result<(), ApiError> {
+        self.edit(|conn| playlists::move_in_player(conn, positions, before))
+    }
+
+    pub fn clear_queue(&self) -> Result<(), ApiError> {
+        self.edit(playlists::clear_player)
     }
 
     pub fn control(&self, action: PlayerAction) -> Result<(), ApiError> {
@@ -363,6 +490,7 @@ impl Player {
 
     /// Resumes the last session's list and position.
     fn restore(&self) -> Result<(), ApiError> {
+        let _list = lock(&self.list);
         let (tracks, index, position_ms) = self.shared.db.read(|conn: &Connection| {
             let tracks = playlists::player_entries(conn)?;
             let (index, position_ms) = playlists::player_position(conn)?;
@@ -746,6 +874,150 @@ mod tests {
             panic!("expected a load, got {commands:?}");
         };
         assert_eq!(*start_ms, 1000);
+    }
+
+    fn queue_titles(fixture: &Fixture) -> Vec<String> {
+        fixture.player_titles()
+    }
+
+    fn queue_events(fixture: &Fixture) -> usize {
+        fixture
+            .events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, CoreEvent::QueueChanged { .. }))
+            .count()
+    }
+
+    #[test]
+    fn edits_while_playing_reach_the_engine_with_where_each_entry_came_from() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        fixture.signal(state(PlaybackState::Playing, 0, "a", 1000));
+        let before = fixture.commands().len();
+
+        fixture.player.add_to_queue(&["b".to_owned()]).unwrap();
+        fixture.player.play_next(&["c".to_owned()]).unwrap();
+        assert_eq!(queue_titles(&fixture), ["a", "c", "b"]);
+        assert_eq!(fixture.player.status().count, 3);
+
+        let commands = fixture.commands();
+        assert_eq!(commands.len(), before + 2, "no reload: {commands:?}");
+        let PlayerCommand::EditList { tracks, origin } = commands.last().unwrap() else {
+            panic!("expected an edit, got {commands:?}");
+        };
+        assert_eq!(tracks.len(), 3);
+        assert_eq!(*origin, [Some(0), None, Some(1)]);
+        assert_eq!(queue_events(&fixture), 3);
+    }
+
+    #[test]
+    fn play_next_goes_after_the_current_track_not_the_first() {
+        let fixture = fixture();
+        let ids = ["a".to_owned(), "b".to_owned()];
+        fixture.player.play_tracks(&ids, 1).unwrap();
+        fixture.signal(state(PlaybackState::Playing, 1, "b", 0));
+        fixture.player.play_next(&["c".to_owned()]).unwrap();
+        assert_eq!(queue_titles(&fixture), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_second_edit_uses_the_place_the_first_one_moved_the_current_track_to() {
+        let fixture = fixture();
+        let ids = ["a".to_owned(), "b".to_owned()];
+        fixture.player.play_tracks(&ids, 1).unwrap();
+        fixture.signal(state(PlaybackState::Playing, 1, "b", 0));
+        // The engine has not reported anything between these two.
+        let items = fixture.player.queue_items(0, 10).unwrap().items;
+        fixture
+            .player
+            .move_in_queue(&[items[1].position], Some(items[0].position))
+            .unwrap();
+        fixture.player.play_next(&["c".to_owned()]).unwrap();
+        assert_eq!(queue_titles(&fixture), ["b", "c", "a"]);
+    }
+
+    #[test]
+    fn with_no_engine_edits_change_the_list_and_keep_the_saved_place() {
+        let fixture = fixture();
+        fixture
+            .db
+            .write(|conn| {
+                let ids = ["a".to_owned(), "b".to_owned(), "c".to_owned()];
+                playlists::set_player_tracks(conn, &ids)?;
+                playlists::save_player_position(conn, Some(1), 7000)?;
+                Ok::<_, ApiError>(())
+            })
+            .unwrap();
+
+        fixture.player.play_next(&["c".to_owned()]).unwrap();
+        assert_eq!(queue_titles(&fixture), ["a", "b", "c", "c"]);
+        assert!(fixture.commands().is_empty(), "no engine was started");
+
+        let items = fixture.player.queue_items(0, 10).unwrap().items;
+        fixture
+            .player
+            .move_in_queue(&[items[1].position], None)
+            .unwrap();
+        assert_eq!(queue_titles(&fixture), ["a", "c", "c", "b"]);
+        fixture.player.control(PlayerAction::Play).unwrap();
+        let commands = fixture.commands();
+        let PlayerCommand::Load {
+            start_index,
+            start_ms,
+            ..
+        } = commands.last().unwrap()
+        else {
+            panic!("expected a load, got {commands:?}");
+        };
+        assert_eq!(
+            (*start_index, *start_ms),
+            (3, 7000),
+            "the same track, same spot"
+        );
+    }
+
+    #[test]
+    fn a_saved_place_follows_removal_to_the_next_entry_or_nowhere() {
+        let origin = [Some(0), Some(2), Some(3)];
+        assert_eq!(moved_place(&origin, Some(2), 500), (Some(1), 500));
+        assert_eq!(moved_place(&origin, Some(1), 500), (Some(1), 0));
+        assert_eq!(moved_place(&[Some(0)], Some(1), 500), (None, 0));
+        assert_eq!(moved_place(&origin, None, 500), (None, 0));
+    }
+
+    #[test]
+    fn playing_an_entry_keeps_the_list() {
+        let fixture = fixture();
+        let ids = ["a".to_owned(), "b".to_owned()];
+        fixture.player.play_tracks(&ids, 0).unwrap();
+        fixture.player.play_index(1).unwrap();
+        assert_eq!(queue_titles(&fixture), ["a", "b"]);
+        let commands = fixture.commands();
+        let PlayerCommand::Load { start_index, .. } = commands.last().unwrap() else {
+            panic!("expected a load, got {commands:?}");
+        };
+        assert_eq!(*start_index, 1);
+        assert_eq!(
+            fixture.player.play_index(5).unwrap_err().code,
+            ErrorCode::InvalidArgs
+        );
+    }
+
+    #[test]
+    fn clearing_while_playing_sends_an_empty_list() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        fixture.player.clear_queue().unwrap();
+        assert!(queue_titles(&fixture).is_empty());
+        assert_eq!(fixture.player.status().count, 0);
+        let commands = fixture.commands();
+        let PlayerCommand::EditList { tracks, origin } = commands.last().unwrap() else {
+            panic!("expected an edit, got {commands:?}");
+        };
+        assert!(tracks.is_empty() && origin.is_empty());
     }
 
     #[test]

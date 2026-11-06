@@ -3,7 +3,7 @@
 
 import type { Component } from "svelte";
 
-export type Region = "sidebar" | "main" | "transport" | "status";
+export type Region = "sidebar" | "main" | "queue" | "transport" | "status";
 
 export type RegisteredView = {
   /** In the main region, the kind of `app.view` this view shows. */

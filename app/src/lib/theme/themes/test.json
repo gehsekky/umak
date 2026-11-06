@@ -22,6 +22,7 @@
     "space-lg": "40px",
     "radius": "14px",
     "size-row": "46px",
-    "size-sidebar": "320px"
+    "size-sidebar": "320px",
+    "size-queue": "460px"
   }
 }

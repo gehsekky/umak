@@ -27,6 +27,14 @@ export type ActionMap = {
   "player.next": void;
   "player.previous": void;
   "player.seek": { ms: number };
+  "queue.togglePanel": void;
+  "queue.add": { trackIds: string[] };
+  "queue.playNext": { trackIds: string[] };
+  "queue.play": { index: number };
+  "queue.remove": { positions: number[] };
+  "queue.move": { positions: number[]; before: number | null };
+  "queue.clear": void;
+  "queue.save": { name: string };
 };
 
 export type ActionId = keyof ActionMap;

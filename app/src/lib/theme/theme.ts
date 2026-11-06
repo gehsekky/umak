@@ -23,7 +23,8 @@ export type TokenName =
   | "space-lg"
   | "radius"
   | "size-row"
-  | "size-sidebar";
+  | "size-sidebar"
+  | "size-queue";
 
 export type Theme = {
   name: string;

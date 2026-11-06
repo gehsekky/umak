@@ -999,3 +999,162 @@ fn report_on_real_joins() {
         );
     }
 }
+
+impl Harness {
+    fn edit(&self, tracks: Vec<TrackEntry>, origin: Vec<Option<usize>>) {
+        self.engine.send(PlayerCommand::EditList { tracks, origin });
+    }
+
+    /// Waits for the engine to report the current track at this list index.
+    fn wait_for_index(&mut self, wanted: Option<usize>) {
+        self.wait_for(
+            |event| matches!(event, PlayerEvent::State { index, .. } if *index == wanted),
+        );
+    }
+
+    fn take_all_after_stop(&mut self) -> Vec<f32> {
+        self.wait_for_stop();
+        thread::sleep(Duration::from_millis(30));
+        self.take_audio()
+    }
+}
+
+#[test]
+fn adding_to_the_list_while_playing_does_not_disturb_the_audio() {
+    let mut whole = harness();
+    let expected = whole.play_all(vec![whole.piece("whole", OUTPUT_RATE, 0..144_000)]);
+
+    let mut player = harness();
+    let first = player.piece("a", OUTPUT_RATE, 0..48_000);
+    let second = player.piece("b", OUTPUT_RATE, 48_000..96_000);
+    let third = player.piece("c", OUTPUT_RATE, 96_000..144_000);
+    player.load(vec![first.clone(), second.clone()], 0, 0);
+    player.edit(vec![first, second, third], vec![Some(0), Some(1), None]);
+    let audio = player.take_all_after_stop();
+    assert!(audio == expected, "the audio differs from the whole");
+    assert_eq!(announced(&player.seen), ["a", "b", "c"]);
+}
+
+#[test]
+fn adding_after_the_last_track_finished_decoding_still_joins_without_a_gap() {
+    let mut whole = harness();
+    let expected = whole.play_all(vec![whole.piece("whole", OUTPUT_RATE, 0..48_000)]);
+
+    let mut player = harness();
+    let first = player.piece("a", OUTPUT_RATE, 0..24_000);
+    let second = player.piece("b", OUTPUT_RATE, 24_000..48_000);
+    player.load(vec![first.clone()], 0, 0);
+    // While paused, the whole track decodes into the queue and decoding reaches the end.
+    player.engine.send(PlayerCommand::Pause);
+    player.wait_for(|event| {
+        matches!(
+            event,
+            PlayerEvent::State {
+                state: PlaybackState::Paused,
+                ..
+            }
+        )
+    });
+    thread::sleep(Duration::from_millis(100));
+    player.edit(vec![first, second], vec![Some(0), None]);
+    player.engine.send(PlayerCommand::Play);
+    let audio = player.take_all_after_stop();
+    assert!(audio == expected, "the audio differs from the whole");
+    assert_eq!(announced(&player.seen), ["a", "b"]);
+}
+
+#[test]
+fn inserting_before_a_queued_track_plays_the_new_one_next_and_resumes_in_place() {
+    let mut player = harness();
+    let tracks = paused_with_the_next_track_queued(&mut player);
+    let new = player.file("new", OUTPUT_RATE, &[(600.0, 0.3)]);
+    let edited = vec![tracks[0].clone(), new, tracks[1].clone(), tracks[2].clone()];
+    player.edit(edited, vec![Some(0), None, Some(1), Some(2)]);
+    player.wait_for(|event| {
+        matches!(
+            event,
+            PlayerEvent::State {
+                state: PlaybackState::Paused,
+                track_id: Some(track),
+                ..
+            } if track == "first"
+        )
+    });
+    player.take_audio();
+    player.engine.send(PlayerCommand::Play);
+    let audio = player.take_all_after_stop();
+    assert_eq!(
+        announced(&player.seen).last().map(String::as_str),
+        Some("third")
+    );
+    assert!(announced(&player.seen).contains(&"new".to_owned()));
+    // The last 0.9 seconds are the three later tracks, in their new order.
+    let tenth = OUTPUT_RATE as usize / 10 * 2;
+    let end = audio.len();
+    assert!(near(
+        frequency(&audio[end - 9 * tenth..end - 6 * tenth]),
+        600.0
+    ));
+    assert!(near(
+        frequency(&audio[end - 6 * tenth..end - 3 * tenth]),
+        3200.0
+    ));
+    assert!(near(frequency(&audio[end - 3 * tenth..]), 200.0));
+}
+
+#[test]
+fn moving_entries_keeps_the_current_track_and_changes_what_follows() {
+    let mut player = harness();
+    let tracks = paused_with_the_next_track_queued(&mut player);
+    // The order becomes third, first, second, and "first" is still playing.
+    let edited = vec![tracks[2].clone(), tracks[0].clone(), tracks[1].clone()];
+    player.edit(edited, vec![Some(2), Some(0), Some(1)]);
+    player.wait_for_index(Some(1));
+    player.engine.send(PlayerCommand::Play);
+    player.wait_for_stop();
+    let names = announced(&player.seen);
+    assert_eq!(names, ["first", "second"], "third moved before the current");
+}
+
+#[test]
+fn removing_the_current_track_moves_to_the_one_that_followed_it() {
+    let mut player = harness();
+    let tracks = paused_with_the_next_track_queued(&mut player);
+    let edited = vec![tracks[1].clone(), tracks[2].clone()];
+    player.edit(edited, vec![Some(1), Some(2)]);
+    // It stays paused, as it was.
+    player.wait_for(|event| {
+        matches!(
+            event,
+            PlayerEvent::State {
+                state: PlaybackState::Paused,
+                index: Some(0),
+                track_id: Some(track),
+                ..
+            } if track == "second"
+        )
+    });
+    player.engine.send(PlayerCommand::Play);
+    player.wait_for_track("third");
+    player.wait_for_stop();
+}
+
+#[test]
+fn removing_a_track_that_was_queued_skips_it() {
+    let mut player = harness();
+    let tracks = paused_with_the_next_track_queued(&mut player);
+    let edited = vec![tracks[0].clone(), tracks[2].clone()];
+    player.edit(edited, vec![Some(0), Some(2)]);
+    player.engine.send(PlayerCommand::Play);
+    player.wait_for_track("third");
+    player.wait_for_stop();
+    assert!(!announced(&player.seen).contains(&"second".to_owned()));
+}
+
+#[test]
+fn clearing_the_list_stops_playback() {
+    let mut player = harness();
+    paused_with_the_next_track_queued(&mut player);
+    player.edit(Vec::new(), Vec::new());
+    player.wait_for_stop();
+}

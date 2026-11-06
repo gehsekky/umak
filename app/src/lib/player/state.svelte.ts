@@ -7,6 +7,10 @@ import { playerClient } from "./client";
 class PlayerState {
   status = $state.raw<PlayerStatus | null>(null);
   positionMs = $state(0);
+  /** Increases when the player playlist changes, so views showing it reload. */
+  queueVersion = $state(0);
+  /** Increases when it becomes a different list altogether. */
+  queueReplacements = $state(0);
 
   readonly playingTrackId = $derived(
     this.status && this.status.state !== "stopped" ? (this.status.track?.id ?? null) : null,
@@ -19,6 +23,9 @@ class PlayerState {
         this.positionMs = update.status.positionMs;
       } else if (update.kind === "position") {
         this.positionMs = update.positionMs;
+      } else if (update.kind === "queue") {
+        this.queueVersion++;
+        if (update.replaced) this.queueReplacements++;
       } else {
         app.fail(update.message);
       }

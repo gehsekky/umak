@@ -2,4 +2,4 @@
 import type { JobKind } from "./JobKind";
 import type { PlayerStatus } from "./PlayerStatus";
 
-export type CoreEvent = { "type": "libraryRootsChanged" } | { "type": "libraryChanged" } | { "type": "playlistsChanged" } | { "type": "playerChanged", status: PlayerStatus, } | { "type": "playerPosition", positionMs: number, } | { "type": "playerError", message: string, } | { "type": "jobProgress", id: string, kind: JobKind, done: number, total: number, } | { "type": "jobFinished", id: string, kind: JobKind, };
+export type CoreEvent = { "type": "libraryRootsChanged" } | { "type": "libraryChanged" } | { "type": "playlistsChanged" } | { "type": "queueChanged", replaced: boolean, } | { "type": "playerChanged", status: PlayerStatus, } | { "type": "playerPosition", positionMs: number, } | { "type": "playerError", message: string, } | { "type": "jobProgress", id: string, kind: JobKind, done: number, total: number, } | { "type": "jobFinished", id: string, kind: JobKind, };

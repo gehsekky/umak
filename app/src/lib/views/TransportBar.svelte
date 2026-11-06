@@ -3,6 +3,7 @@
   import { actionLabel, runAction } from "../actions/registry";
   import { formatDuration } from "../lists/format";
   import { player } from "../player/state.svelte";
+  import { app } from "../state/app.svelte";
 
   const status = $derived(player.status);
   const isPlaying = $derived(status?.state === "playing");
@@ -69,12 +70,19 @@
     }}
   />
   <span class="time">{formatDuration(isActive ? duration : 0)}</span>
+  <button
+    class:on={app.queueOpen}
+    title="{actionLabel('queue.togglePanel')} (Ctrl+Q)"
+    aria-label={actionLabel("queue.togglePanel")}
+    aria-pressed={app.queueOpen}
+    onclick={() => runAction("queue.togglePanel")}>☰</button
+  >
 </div>
 
 <style>
   .bar {
     display: grid;
-    grid-template-columns: auto minmax(8em, 16em) auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(8em, 16em) auto minmax(0, 1fr) auto auto;
     gap: var(--space-sm);
     align-items: center;
     padding: var(--space-xs) var(--space-md);
@@ -105,6 +113,10 @@
 
   button:focus-visible {
     outline: 1px solid var(--color-accent);
+  }
+
+  .on {
+    color: var(--color-accent);
   }
 
   .main {

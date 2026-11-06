@@ -26,10 +26,36 @@
     onsort?: (sort: TrackSort) => void;
     /** A row was double-clicked, or Enter was pressed on it. */
     onactivate?: (row: R, index: number) => void;
+    /** Fewer columns and no header, for a narrow panel. */
+    compact?: boolean;
+    /** Which row is the one playing. By default, any row of the playing track. */
+    isCurrent?: (row: R, index: number) => boolean;
+    /** Sees keys first, and returns whether it used the key. */
+    onkeys?: (event: KeyboardEvent) => boolean;
+    /** Lets rows be dragged. The selected rows were dropped at this place between rows. */
+    onreorder?: (gap: number) => void;
     empty: Snippet;
   };
 
-  let { list, selection, track, number, label, sort, onsort, onactivate, empty }: Props = $props();
+  let {
+    list,
+    selection,
+    track,
+    number,
+    label,
+    sort,
+    onsort,
+    onactivate,
+    compact = false,
+    isCurrent,
+    onkeys,
+    onreorder,
+    empty,
+  }: Props = $props();
+
+  /** How far the pointer moves before a press becomes a drag. */
+  const DRAG_THRESHOLD = 4;
+  const DRAG_SCROLL_MS = 50;
 
   let virtual = $state<VirtualList<R>>();
   let start = $state(0);
@@ -48,12 +74,80 @@
     virtual?.focus();
   }
 
+  export function reveal(index: number): void {
+    virtual?.reveal(index);
+  }
+
+  function current(row: R, index: number): boolean {
+    return isCurrent ? isCurrent(row, index) : player.playingTrackId === track(row).id;
+  }
+
+  let dropGap = $state<number | null>(null);
+  /** The click that ends a drag should not also select. */
+  let justDragged = false;
+
+  /**
+   * Starts watching a press on a row. The listeners are on the window because rows come
+   * and go as the list scrolls, and the pointer may leave the list.
+   */
+  function press(event: PointerEvent, index: number): void {
+    if (!onreorder || event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    const startY = event.clientY;
+    let lastY = startY;
+    let scrolling: ReturnType<typeof setInterval> | undefined;
+
+    const move = (moved: PointerEvent): void => {
+      lastY = moved.clientY;
+      if (dropGap === null) {
+        if (Math.abs(lastY - startY) < DRAG_THRESHOLD) return;
+        const row = list.row(index);
+        if (row && !selection.has(list.key(row))) selection.only(index, list.key(row));
+        scrolling = setInterval(() => {
+          virtual?.scrollNear(lastY);
+          dropGap = virtual?.gapAt(lastY) ?? null;
+        }, DRAG_SCROLL_MS);
+      }
+      dropGap = virtual?.gapAt(lastY) ?? null;
+    };
+    const finish = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("keydown", cancel, true);
+      clearInterval(scrolling);
+    };
+    const release = (): void => {
+      finish();
+      if (dropGap !== null) {
+        justDragged = true;
+        setTimeout(() => (justDragged = false));
+        onreorder?.(dropGap);
+        dropGap = null;
+      }
+    };
+    const cancel = (keyed: KeyboardEvent): void => {
+      if (keyed.key !== "Escape") return;
+      keyed.stopPropagation();
+      finish();
+      if (dropGap !== null) {
+        justDragged = true;
+        setTimeout(() => (justDragged = false));
+      }
+      dropGap = null;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", release);
+    window.addEventListener("keydown", cancel, true);
+  }
+
   async function extendTo(index: number): Promise<void> {
     const [from, to] = selection.rangeTo(index);
     selection.setRange(await list.keysInRange(from, to), index);
   }
 
   function click(event: MouseEvent, index: number): void {
+    if (justDragged) return;
     const row = list.row(index);
     if (!row) return;
     const key = list.key(row);
@@ -79,6 +173,10 @@
   }
 
   function keydown(event: KeyboardEvent): void {
+    if (onkeys?.(event)) {
+      event.preventDefault();
+      return;
+    }
     const cursor = selection.cursor ?? -1;
     const page = virtual?.pageRows() ?? 1;
     const steps: Record<string, number> = {
@@ -114,8 +212,8 @@
   ];
 </script>
 
-<div class="table">
-  <div class="header row" role="row">
+<div class="table" class:compact>
+  {#if !compact}<div class="header row" role="row">
     {#each headers as header}
       <div class:end={header.align === "end"} role="columnheader">
         {#if header.sort && onsort}
@@ -132,7 +230,7 @@
         {/if}
       </div>
     {/each}
-  </div>
+  </div>{/if}
 
   {#if list.error}
     <p class="message error">Could not load this list: {list.error}</p>
@@ -146,42 +244,48 @@
     bind:end
     total={list.total}
     {label}
+    {dropGap}
     onkeydown={keydown}
   >
     {#snippet row(index)}
       {@const item = list.row(index)}
       {#if item}
         {@const info = track(item)}
+        {@const isPlaying = current(item, index)}
         <!-- Keyboard selection is handled by the list, which holds focus. -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div
           class="row body"
           class:selected={selection.has(list.key(item))}
           class:missing={info.missing}
-          class:playing={player.playingTrackId === info.id}
+          class:playing={isPlaying}
           role="row"
           tabindex="-1"
           aria-rowindex={index + 1}
           aria-selected={selection.has(list.key(item))}
           onclick={(event) => click(event, index)}
+          onpointerdown={(event) => press(event, index)}
           ondblclick={() => onactivate?.(item, index)}
           onmousedown={(event) => {
             if (event.shiftKey) event.preventDefault();
           }}
         >
           <div class="end muted number" role="gridcell">
-            {player.playingTrackId === info.id ? "▶" : number(item, index)}
+            {isPlaying ? "▶" : number(item, index)}
           </div>
-          <div role="gridcell" title={info.title}>
+          <div role="gridcell" title={compact ? `${info.title} - ${info.artist}` : info.title}>
             <!-- First, so a long title cannot push it out of sight. -->
             {#if info.missing}<span class="tag">Missing</span>{/if}
             {info.title}
+            {#if compact}<span class="muted">{info.artist}</span>{/if}
           </div>
-          <div role="gridcell" title={info.artist}>{info.artist}</div>
-          <div role="gridcell" title={info.album}>{info.album}</div>
-          <div class="end muted" role="gridcell">{info.year ?? ""}</div>
+          {#if !compact}
+            <div role="gridcell" title={info.artist}>{info.artist}</div>
+            <div role="gridcell" title={info.album}>{info.album}</div>
+            <div class="end muted" role="gridcell">{info.year ?? ""}</div>
+          {/if}
           <div class="end muted time" role="gridcell">{formatDuration(info.durationMs)}</div>
-          <div class="muted" role="gridcell">{formatQuality(info)}</div>
+          {#if !compact}<div class="muted" role="gridcell">{formatQuality(info)}</div>{/if}
         </div>
       {:else}
         <div class="row body placeholder" aria-hidden="true"></div>
@@ -205,6 +309,11 @@
     gap: var(--space-sm);
     align-items: center;
     padding: 0 var(--space-md) 0 var(--space-sm);
+  }
+
+  .compact .row {
+    grid-template-columns: 3em minmax(0, 1fr) auto;
+    padding: 0 var(--space-sm) 0 0;
   }
 
   .row > div {
@@ -285,6 +394,10 @@
 
   .sort:focus-visible {
     outline: 1px solid var(--color-accent);
+  }
+
+  .compact .message {
+    inset: var(--space-lg) var(--space-sm) auto;
   }
 
   .message {

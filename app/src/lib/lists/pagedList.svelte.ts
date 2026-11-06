@@ -108,13 +108,18 @@ export class PagedList<T> {
     this.version++;
   }
 
-  /** The keys of a range of rows, loaded or not. `end` is exclusive. */
-  async keysInRange(start: number, end: number): Promise<Key[]> {
-    const keys: Key[] = [];
+  /** A range of rows, loaded or not. `end` is exclusive. */
+  async rowsInRange(start: number, end: number): Promise<T[]> {
+    const found: T[] = [];
     for (let offset = start; offset < end; offset += BULK_SIZE) {
       const { rows } = await this.source(offset, Math.min(BULK_SIZE, end - offset));
-      for (const row of rows) keys.push(this.key(row));
+      found.push(...rows);
     }
-    return keys;
+    return found;
+  }
+
+  /** The keys of a range of rows, loaded or not. `end` is exclusive. */
+  async keysInRange(start: number, end: number): Promise<Key[]> {
+    return (await this.rowsInRange(start, end)).map((row) => this.key(row));
   }
 }

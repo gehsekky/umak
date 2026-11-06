@@ -171,4 +171,51 @@ export function registerAppActions(): void {
     run: () => playerClient.control("previous"),
   });
   registerAction({ id: "player.seek", label: "Seek", run: ({ ms }) => playerClient.seek(ms) });
+
+  registerAction({
+    id: "queue.togglePanel",
+    label: "Show or hide the queue",
+    shortcut: "ctrl+q",
+    run: () => app.setQueueOpen(!app.queueOpen),
+  });
+  registerAction({
+    id: "queue.add",
+    label: "Add to queue",
+    run: async ({ trackIds }) => {
+      await playerClient.addToQueue(trackIds);
+      app.notify(`Added ${countOf(trackIds.length, "track")} to the queue`);
+    },
+  });
+  registerAction({
+    id: "queue.playNext",
+    label: "Play next",
+    run: async ({ trackIds }) => {
+      await playerClient.playNext(trackIds);
+      app.notify(`${countOf(trackIds.length, "track")} will play next`);
+    },
+  });
+  registerAction({
+    id: "queue.play",
+    label: "Play this entry",
+    run: ({ index }) => playerClient.playQueueEntry(index),
+  });
+  registerAction({
+    id: "queue.remove",
+    label: "Remove",
+    run: ({ positions }) => playerClient.removeFromQueue(positions),
+  });
+  registerAction({
+    id: "queue.move",
+    label: "Move in queue",
+    run: ({ positions, before }) => playerClient.moveInQueue(positions, before),
+  });
+  registerAction({ id: "queue.clear", label: "Clear", run: () => playerClient.clearQueue() });
+  registerAction({
+    id: "queue.save",
+    label: "Save as playlist",
+    run: async ({ name }) => {
+      const playlist = await playerClient.saveQueue(name);
+      app.notify(`Saved the queue as ${playlist.name}`);
+    },
+  });
 }

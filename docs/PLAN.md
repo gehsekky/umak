@@ -266,6 +266,8 @@ The player has exactly one playlist, the player playlist, and playback always re
 | Add to queue | Append the track or tracks to the end of the list |
 | Play next | Insert after the current track |
 | Press Play with nothing loaded | Resume the last session's list and position |
+| Remove the current track | The track that followed it takes over, or playback stops if none did |
+| Clear the list | Playback stops |
 
 The player playlist is persistent and editable: reorder, remove, clear, or save it as a regular playlist. Loading a saved playlist copies its tracks, so edits to the player list never change the saved one unless you save back.
 
@@ -551,6 +553,8 @@ Gapless results, November 2026:
 - About 4,300 of 15,000 MP3s and 27 of 203 AAC files have no such tag, and a LAME tag with a bad checksum is ignored. These play with their silence, since nothing says how much there is.
 - Tracks at the same rate share one resampler, so a join through it matches the unsplit audio to within 0.001 of full scale. At the output rate the join is identical to the unsplit audio, sample for sample.
 - Across 12 real joins in live recordings that run across tracks, in MP3 and FLAC, the audio has at most 1 silent frame near the join and no step beyond what the music itself has.
+
+Edits reach the engine as the new list plus where each entry came from, so the engine maps its own position and an edit cannot race a track change. Playback is untouched unless the edit changes audio already queued, which can only be discarded along with the queued part of the current track, so that track then resumes from where it was. Edits on a 30,000-entry list take 28 to 69 ms.
 
 Not in this phase unless asked for: crossfade, EBU R128 analysis, parametric EQ, AutoEq import, linear-phase mode, device selection, shuffle and repeat, album art, a waveform seek bar, and WASAPI exclusive output.
 

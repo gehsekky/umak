@@ -80,6 +80,11 @@ pub enum CoreEvent {
     LibraryChanged,
     /// A playlist or its contents changed.
     PlaylistsChanged,
+    /// The player playlist changed. `replaced` means it is a different list, so positions
+    /// held from before say nothing about it.
+    QueueChanged {
+        replaced: bool,
+    },
     /// Playback state or the current track changed.
     PlayerChanged {
         status: Box<PlayerStatus>,
@@ -197,6 +202,14 @@ commands![
     MovePlaylistItems,
     PlayTracks,
     PlayPlaylist,
+    PlayQueueEntry,
+    GetQueueItems,
+    AddToQueue,
+    PlayNext,
+    RemoveFromQueue,
+    MoveInQueue,
+    ClearQueue,
+    SaveQueue,
     ControlPlayer,
     SeekPlayer,
     GetPlayerStatus,
@@ -586,6 +599,140 @@ impl Command for PlayPlaylist {
     fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
         core.player.play_playlist(&self.id, self.start_index)?;
         Ok(core.player.status())
+    }
+}
+
+/// Plays one entry of the player playlist, leaving the list as it is.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PlayQueueEntry {
+    pub index: u32,
+}
+
+impl Command for PlayQueueEntry {
+    const NAME: &'static str = "player.queue.play";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.play_index(self.index)?;
+        Ok(core.player.status())
+    }
+}
+
+/// A page of the player playlist. Positions identify entries in the other queue commands.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetQueueItems {
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Command for GetQueueItems {
+    const NAME: &'static str = "player.queue.items";
+    type Output = PlaylistPage;
+
+    fn run(self, core: &Core) -> Result<PlaylistPage, ApiError> {
+        core.player.queue_items(self.offset, self.limit)
+    }
+}
+
+/// Adds tracks to the end of the player playlist.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AddToQueue {
+    pub track_ids: Vec<String>,
+}
+
+impl Command for AddToQueue {
+    const NAME: &'static str = "player.queue.add";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.add_to_queue(&self.track_ids)?;
+        Ok(core.player.status())
+    }
+}
+
+/// Inserts tracks right after the current one.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlayNext {
+    pub track_ids: Vec<String>,
+}
+
+impl Command for PlayNext {
+    const NAME: &'static str = "player.queue.playNext";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.play_next(&self.track_ids)?;
+        Ok(core.player.status())
+    }
+}
+
+/// Removes entries. If the current track goes, the one that followed it takes over.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveFromQueue {
+    pub positions: Vec<i64>,
+}
+
+impl Command for RemoveFromQueue {
+    const NAME: &'static str = "player.queue.remove";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.remove_from_queue(&self.positions)?;
+        Ok(core.player.status())
+    }
+}
+
+/// Moves entries together before another entry, or to the end when `before` is null.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MoveInQueue {
+    pub positions: Vec<i64>,
+    pub before: Option<i64>,
+}
+
+impl Command for MoveInQueue {
+    const NAME: &'static str = "player.queue.move";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.move_in_queue(&self.positions, self.before)?;
+        Ok(core.player.status())
+    }
+}
+
+/// Empties the player playlist, which stops playback.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ClearQueue {}
+
+impl Command for ClearQueue {
+    const NAME: &'static str = "player.queue.clear";
+    type Output = PlayerStatus;
+
+    fn run(self, core: &Core) -> Result<PlayerStatus, ApiError> {
+        core.player.clear_queue()?;
+        Ok(core.player.status())
+    }
+}
+
+/// Saves a copy of the player playlist as a new playlist.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SaveQueue {
+    pub name: String,
+}
+
+impl Command for SaveQueue {
+    const NAME: &'static str = "player.queue.save";
+    type Output = Playlist;
+
+    fn run(self, core: &Core) -> Result<Playlist, ApiError> {
+        core.change_playlists(|conn, now| playlists::save_player_as(conn, &self.name, now))
     }
 }
 

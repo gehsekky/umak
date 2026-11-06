@@ -20,6 +20,13 @@ pub enum PlayerCommand {
         start_index: usize,
         start_ms: u64,
     },
+    /// Changes the list without disturbing what is playing. For each entry in `tracks`,
+    /// `origin` gives its index in the old list, or null for a new entry. The engine maps
+    /// its own position through this, so an edit cannot race a track change.
+    EditList {
+        tracks: Vec<TrackEntry>,
+        origin: Vec<Option<usize>>,
+    },
     Play,
     Pause,
     Stop,

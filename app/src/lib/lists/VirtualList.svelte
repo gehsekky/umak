@@ -13,6 +13,8 @@
     end?: number;
     onkeydown?: (event: KeyboardEvent) => void;
     label: string;
+    /** Where a dragged row would land, as a place between rows. */
+    dropGap?: number | null;
   };
 
   let {
@@ -22,6 +24,7 @@
     end = $bindable(0),
     onkeydown,
     label,
+    dropGap = null,
   }: Props = $props();
 
   let container: HTMLDivElement;
@@ -66,6 +69,22 @@
     }
   }
 
+  /** The place between rows nearest a point on screen. */
+  export function gapAt(clientY: number): number {
+    const offset = clientY - container.getBoundingClientRect().top + container.scrollTop;
+    return Math.max(0, Math.min(total, Math.round(offset / rowHeight)));
+  }
+
+  /** Scrolls a little if a point is near the top or bottom edge. */
+  export function scrollNear(clientY: number): void {
+    const bounds = container.getBoundingClientRect();
+    if (clientY < bounds.top + rowHeight) {
+      container.scrollTop -= rowHeight;
+    } else if (clientY > bounds.bottom - rowHeight) {
+      container.scrollTop += rowHeight;
+    }
+  }
+
   /** How many rows fit on screen, for page-up and page-down. */
   export function pageRows(): number {
     return Math.max(1, visibleCount - 1);
@@ -92,6 +111,9 @@
         {@render row(index)}
       </div>
     {/each}
+    {#if dropGap !== null}
+      <div class="drop" style:transform="translateY({dropGap * rowHeight}px)"></div>
+    {/if}
   </div>
 </div>
 
@@ -109,6 +131,16 @@
     position: relative;
     contain: strict;
     width: 100%;
+  }
+
+  .drop {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -1px;
+    height: 2px;
+    background: var(--color-accent);
+    pointer-events: none;
   }
 
   .slot {
