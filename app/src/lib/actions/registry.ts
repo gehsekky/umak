@@ -32,6 +32,9 @@ export type ActionMap = {
   "player.seek": { ms: number };
   "player.setVolume": { volume: number };
   "player.setGain": { replayGain: ReplayGainMode; preampDb: number };
+  "player.setEq": { enabled: boolean; bands: number[] };
+  "player.saveEqPreset": { name: string; bands: number[] };
+  "player.deleteEqPreset": { name: string };
   "queue.togglePanel": void;
   "queue.add": { trackIds: string[] };
   "queue.playNext": { trackIds: string[] };

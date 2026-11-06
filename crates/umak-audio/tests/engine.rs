@@ -1241,3 +1241,172 @@ fn each_track_of_a_gapless_join_gets_its_own_gain_at_the_exact_sample() {
         );
     }
 }
+
+fn set_eq(player: &Harness, band: usize, db: f32) {
+    let mut bands_db = [0.0; 10];
+    bands_db[band] = db;
+    player.engine.send(PlayerCommand::SetEq {
+        enabled: true,
+        bands_db,
+    });
+}
+
+/// The level of a part of the audio, relative to a reference, in decibels.
+fn level_db(samples: &[f32], reference: f32) -> f32 {
+    20.0 * (peak_of(samples) / reference).log10()
+}
+
+#[test]
+fn the_equalizer_changes_tones_by_the_stated_amount_through_the_whole_engine() {
+    let mut plain = harness();
+    let tones = [(1000.0, 0.5), (125.0, 0.5)];
+    let track = plain.file("tones", OUTPUT_RATE, &tones);
+    let reference = plain.play_all(vec![track.clone()]);
+    let half = reference.len() / 2;
+    let settled = half / 4;
+    let reference_level = peak_of(&reference[settled..half]);
+
+    let mut player = harness();
+    // A cut, so the rest of the signal keeps its level.
+    set_eq(&player, 5, -6.0);
+    let track = player.file("tones", OUTPUT_RATE, &tones);
+    let audio = player.play_all(vec![track]);
+    let at_band = level_db(&audio[settled..half], reference_level);
+    assert!((at_band + 6.0).abs() < 0.2, "at 1 kHz: {at_band} dB");
+    let elsewhere = level_db(&audio[half + settled..], reference_level);
+    assert!(elsewhere.abs() < 0.2, "at 125 Hz: {elsewhere} dB");
+}
+
+#[test]
+fn turning_the_equalizer_off_leaves_samples_exactly_as_they_were() {
+    let mut whole = harness();
+    let expected = whole.play_all(vec![whole.piece("whole", OUTPUT_RATE, 0..24_000)]);
+    let mut player = harness();
+    player.engine.send(PlayerCommand::SetEq {
+        enabled: false,
+        bands_db: [9.0; 10],
+    });
+    let track = player.piece("track", OUTPUT_RATE, 0..24_000);
+    assert!(player.play_all(vec![track]) == expected);
+}
+
+#[test]
+fn the_limiter_holds_a_heavy_boost_under_full_scale_through_the_whole_engine() {
+    // The tone's peak is 0.5, so 12 dB of preamp would reach about 2.
+    let mut player = harness();
+    set_track_mode(&player, 12.0);
+    let track = player.piece("loud", OUTPUT_RATE, 0..24_000);
+    let audio = player.play_all(vec![track]);
+    let peak = peak_of(&audio);
+    assert!(peak <= 1.0, "peak {peak}");
+    assert!(peak > 0.9, "peak {peak}");
+}
+
+#[test]
+fn a_gapless_join_stays_continuous_through_the_equalizer() {
+    let mut whole = harness();
+    set_eq(&whole, 5, -6.0);
+    let expected = whole.play_all(vec![whole.piece("whole", OUTPUT_RATE, 0..48_000)]);
+
+    let mut player = harness();
+    set_eq(&player, 5, -6.0);
+    let tracks = vec![
+        player.piece("a", OUTPUT_RATE, 0..24_000),
+        player.piece("b", OUTPUT_RATE, 24_000..48_000),
+    ];
+    let audio = player.play_all(tracks);
+    assert_eq!(audio.len(), expected.len());
+    let worst = audio
+        .iter()
+        .zip(&expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max);
+    assert!(worst < 1e-5, "worst difference {worst}");
+}
+
+/// How much of the audio thread's time the full chain takes. Run with --release.
+#[test]
+#[ignore = "a measurement; run with --release --ignored --nocapture"]
+fn report_the_cost_of_the_signal_chain() {
+    let (mut feeds, mut renderer, shared) = umak_audio::render::channel(
+        OUTPUT_RATE as usize * 2 * 2,
+        OUTPUT_RATE,
+        2,
+        EffectChain::default(),
+        None,
+    );
+    shared.set_gain(ReplayGainMode::Album, 3.0);
+    shared.set_eq(
+        true,
+        &[3.0, -3.0, 3.0, -3.0, 3.0, -3.0, 3.0, -3.0, 3.0, -3.0],
+    );
+    // The device's usual request: 10 ms.
+    let block = OUTPUT_RATE as usize / 100;
+    let source: Vec<f32> = (0..block * 2)
+        .map(|index| (index as f32 * 0.03).sin() * 0.5)
+        .collect();
+    let mut output = vec![0.0; block * 2];
+    let mut busy = Duration::ZERO;
+    let rounds = 6000;
+    for _ in 0..rounds {
+        let _ = feeds.samples.push_partial_slice(&source);
+        let started = Instant::now();
+        renderer.render(&mut output);
+        busy += started.elapsed();
+    }
+    let audio = Duration::from_millis(10) * rounds;
+    println!(
+        "{busy:?} of work for {audio:?} of audio: {:.3}% of one core",
+        busy.as_secs_f64() / audio.as_secs_f64() * 100.0
+    );
+}
+
+/// How the limiter treats real music. Set `UMAK_LIMIT_FILES` to paths separated by `;`.
+#[test]
+#[ignore = "needs real files; run with --release --ignored --nocapture"]
+fn report_on_limiting_real_audio() {
+    use umak_audio::decoder::Decoder;
+    use umak_audio::effects::Effect;
+    use umak_audio::limiter::Limiter;
+    use umak_audio::source::LocalFile;
+
+    let files = std::env::var("UMAK_LIMIT_FILES").expect("set UMAK_LIMIT_FILES");
+    for path in files.split(';') {
+        let source = LocalFile(path.into());
+        let mut decoder = Decoder::open(&source).unwrap();
+        let mut samples = Vec::new();
+        while decoder.next_chunk(&mut samples).unwrap() {}
+        let channels = decoder.channels();
+        let source_peak = peak_of(&samples);
+        println!("{path}\n  source peak {source_peak:.3}");
+        for boost_db in [3.0_f32, 6.0, 12.0] {
+            let boost = 10.0_f32.powf(boost_db / 20.0);
+            let boosted: Vec<f32> = samples.iter().map(|sample| sample * boost).collect();
+            let mut limited = boosted.clone();
+            Limiter::new(decoder.sample_rate()).process(&mut limited, channels);
+            let (mut touched, mut total_db, mut worst_db) = (0_u64, 0.0_f64, 0.0_f64);
+            for (out, input) in limited
+                .chunks_exact(channels)
+                .zip(boosted.chunks_exact(channels))
+            {
+                if out[0] != input[0] && input[0] != 0.0 {
+                    let db = 20.0 * f64::from((out[0] / input[0]).abs()).log10();
+                    touched += 1;
+                    total_db += db;
+                    worst_db = worst_db.min(db);
+                }
+            }
+            let frames = limited.len() / channels;
+            println!(
+                "  +{boost_db} dB: reducing {:.1}% of the time, by {:.2} dB on average then, {worst_db:.1} dB at most; output peak {:.4}",
+                touched as f64 / frames as f64 * 100.0,
+                if touched > 0 {
+                    total_db / touched as f64
+                } else {
+                    0.0
+                },
+                peak_of(&limited),
+            );
+        }
+    }
+}

@@ -4,6 +4,10 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+/// The graphic equalizer's bands, in hertz.
+pub const EQ_BANDS: usize = 10;
+pub const EQ_FREQUENCIES: [u32; EQ_BANDS] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackEntry {
     pub id: String,
@@ -67,6 +71,11 @@ pub enum PlayerCommand {
     SetGain {
         replay_gain: ReplayGainMode,
         preamp_db: f32,
+    },
+    /// The equalizer. The bands are in decibels, in the order of `EQ_FREQUENCIES`.
+    SetEq {
+        enabled: bool,
+        bands_db: [f32; EQ_BANDS],
     },
     Quit,
 }

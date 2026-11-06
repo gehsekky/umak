@@ -20,7 +20,8 @@ use crate::db::{Database, DbError, new_public_id};
 use crate::jobs::{JobInfo, JobKind, JobOutcome, JobRunner};
 use crate::library::{self, TrackPage, TrackSort};
 use crate::player::{
-    BackendFactory, GainCoverage, Player, PlayerAction, PlayerSettings, PlayerStatus, no_engine,
+    BackendFactory, EqPresets, GainCoverage, Player, PlayerAction, PlayerSettings, PlayerStatus,
+    no_engine,
 };
 use crate::playlists::{self, Playlist, PlaylistPage};
 use crate::scan::{self, ScanError, ScanOptions};
@@ -96,6 +97,8 @@ pub enum CoreEvent {
     PlayerSettingsChanged {
         settings: PlayerSettings,
     },
+    /// The saved equalizer presets changed.
+    EqPresetsChanged,
     /// Sent a few times a second during playback.
     #[serde(rename_all = "camelCase")]
     PlayerPosition {
@@ -224,6 +227,10 @@ commands![
     SetPlayerVolume,
     SetPlayerGain,
     GetGainCoverage,
+    SetPlayerEq,
+    GetEqPresets,
+    SaveEqPreset,
+    DeleteEqPreset,
     ExportLibrary,
     PreviewImport,
     StartImport,
@@ -1022,6 +1029,68 @@ impl Command for GetGainCoverage {
 
     fn run(self, core: &Core) -> Result<GainCoverage, ApiError> {
         core.player.gain_coverage()
+    }
+}
+
+/// Sets the equalizer. It applies at once and is saved.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SetPlayerEq {
+    pub enabled: bool,
+    pub bands: Vec<f32>,
+}
+
+impl Command for SetPlayerEq {
+    const NAME: &'static str = "player.setEq";
+    type Output = PlayerSettings;
+
+    fn run(self, core: &Core) -> Result<PlayerSettings, ApiError> {
+        core.player.set_eq(self.enabled, &self.bands)
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetEqPresets {}
+
+impl Command for GetEqPresets {
+    const NAME: &'static str = "player.eqPresets";
+    type Output = EqPresets;
+
+    fn run(self, core: &Core) -> Result<EqPresets, ApiError> {
+        core.player.eq_presets()
+    }
+}
+
+/// Saves a preset, replacing one of that name unless it comes with the app.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SaveEqPreset {
+    pub name: String,
+    pub bands: Vec<f32>,
+}
+
+impl Command for SaveEqPreset {
+    const NAME: &'static str = "player.eqPresets.save";
+    type Output = EqPresets;
+
+    fn run(self, core: &Core) -> Result<EqPresets, ApiError> {
+        core.player.save_eq_preset(&self.name, &self.bands)
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteEqPreset {
+    pub name: String,
+}
+
+impl Command for DeleteEqPreset {
+    const NAME: &'static str = "player.eqPresets.delete";
+    type Output = EqPresets;
+
+    fn run(self, core: &Core) -> Result<EqPresets, ApiError> {
+        core.player.delete_eq_preset(&self.name)
     }
 }
 

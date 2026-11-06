@@ -192,6 +192,28 @@ export function registerAppActions(): void {
   });
 
   registerAction({
+    id: "player.setEq",
+    label: "Equalizer",
+    run: ({ enabled, bands }) => playerClient.setEq(enabled, bands),
+  });
+  registerAction({
+    id: "player.saveEqPreset",
+    label: "Save preset",
+    run: async ({ name, bands }) => {
+      await playerClient.saveEqPreset(name, bands);
+      app.notify(`Saved the preset ${name.trim()}`);
+    },
+  });
+  registerAction({
+    id: "player.deleteEqPreset",
+    label: "Delete preset",
+    run: async ({ name }) => {
+      await playerClient.deleteEqPreset(name);
+      app.notify(`Deleted the preset ${name}`);
+    },
+  });
+
+  registerAction({
     id: "queue.togglePanel",
     label: "Show or hide the queue",
     shortcut: "ctrl+q",

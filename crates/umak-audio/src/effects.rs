@@ -1,6 +1,7 @@
 //! The signal chain's two seams: effects that change samples, and a tap that reads
 //! what goes to the output. Both run on the audio thread, so implementations must not
-//! block, allocate or take locks. The chain is empty until the EQ arrives.
+//! block, allocate or take locks. The chain holds what comes between the equalizer and
+//! the limiter, which are fixed stages of their own: it is the place for plugins.
 
 pub trait Effect: Send {
     fn process(&mut self, samples: &mut [f32], channels: usize);
@@ -20,6 +21,10 @@ pub struct EffectChain {
 impl EffectChain {
     pub fn new(effects: Vec<Box<dyn Effect>>) -> Self {
         Self { effects }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.effects.is_empty()
     }
 
     pub fn process(&mut self, samples: &mut [f32], channels: usize) {

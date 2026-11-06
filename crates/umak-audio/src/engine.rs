@@ -160,8 +160,13 @@ impl Worker {
         let format = output.format();
         let channels = usize::from(format.channels);
         let capacity = format.sample_rate as usize * channels * QUEUE_SECONDS;
-        let (feeds, renderer, shared) =
-            render::channel(capacity, channels, chain.effects, chain.tap);
+        let (feeds, renderer, shared) = render::channel(
+            capacity,
+            format.sample_rate,
+            channels,
+            chain.effects,
+            chain.tap,
+        );
         let stream = match output.start(renderer) {
             Ok(stream) => stream,
             Err(message) => return Err((events, message)),
@@ -276,6 +281,7 @@ impl Worker {
                 replay_gain,
                 preamp_db,
             } => self.shared.set_gain(replay_gain, preamp_db),
+            PlayerCommand::SetEq { enabled, bands_db } => self.shared.set_eq(enabled, &bands_db),
             PlayerCommand::Quit => {}
         }
     }

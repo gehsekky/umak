@@ -12,6 +12,10 @@ pub mod effects;
 #[cfg(feature = "engine")]
 pub mod engine;
 #[cfg(feature = "engine")]
+pub mod eq;
+#[cfg(feature = "engine")]
+pub mod limiter;
+#[cfg(feature = "engine")]
 pub mod output;
 #[cfg(feature = "engine")]
 pub mod render;

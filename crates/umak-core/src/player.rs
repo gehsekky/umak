@@ -11,7 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use umak_audio::protocol::{PlaybackState, PlayerCommand, PlayerEvent, ReplayGainMode, TrackEntry};
+use umak_audio::protocol::{
+    EQ_BANDS, EQ_FREQUENCIES, PlaybackState, PlayerCommand, PlayerEvent, ReplayGainMode, TrackEntry,
+};
 
 use crate::api::{ApiError, CoreEvent, ErrorCode, EventSink};
 use crate::db::{Database, DbError};
@@ -31,6 +33,30 @@ const REPLAY_GAIN_KEY: &str = "player.replayGain";
 const PREAMP_KEY: &str = "player.preampDb";
 /// The preamp's range in decibels.
 const MAX_PREAMP_DB: f32 = 12.0;
+const EQ_KEY: &str = "player.eq";
+const EQ_PRESETS_KEY: &str = "player.eqPresets";
+/// The range of an equalizer band in decibels.
+const MAX_BAND_DB: f32 = 12.0;
+/// Presets that come with the app, which cannot be changed or removed.
+const BUILT_IN_PRESETS: [(&str, [f32; EQ_BANDS]); 5] = [
+    ("Flat", [0.0; EQ_BANDS]),
+    (
+        "Bass boost",
+        [6.0, 5.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ),
+    (
+        "Treble boost",
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 4.0, 5.0, 6.0],
+    ),
+    (
+        "Vocal",
+        [-2.0, -2.0, -1.0, 0.0, 2.0, 3.0, 3.0, 2.0, 0.0, -1.0],
+    ),
+    (
+        "Smile",
+        [5.0, 4.0, 2.0, 0.0, -1.0, -1.0, 0.0, 2.0, 4.0, 5.0],
+    ),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +96,7 @@ impl Default for PlayerStatus {
 }
 
 /// How playback is leveled. These are saved, and each new engine starts with them.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerSettings {
     /// Output gain from 0 to 1.
@@ -78,6 +104,100 @@ pub struct PlayerSettings {
     pub replay_gain: ReplayGainMode,
     /// Decibels on top of the ReplayGain value. Applies unless ReplayGain is off.
     pub preamp_db: f32,
+    pub eq: EqSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct EqSettings {
+    pub enabled: bool,
+    /// Decibels per band, in the order of the frequencies in `EqPresets`.
+    pub bands: Vec<f32>,
+}
+
+impl Default for EqSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bands: vec![0.0; EQ_BANDS],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EqPreset {
+    pub name: String,
+    pub bands: Vec<f32>,
+    /// Comes with the app, so it cannot be changed or removed.
+    #[serde(default)]
+    pub built_in: bool,
+}
+
+/// The equalizer's bands, and the presets that can fill them.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+pub struct EqPresets {
+    pub frequencies: Vec<u32>,
+    pub presets: Vec<EqPreset>,
+}
+
+/// Checks a set of bands and brings each into range.
+fn clean_bands(bands: &[f32]) -> Result<[f32; EQ_BANDS], ApiError> {
+    let bands: [f32; EQ_BANDS] = bands.try_into().map_err(|_| {
+        ApiError::new(
+            ErrorCode::InvalidArgs,
+            format!("the equalizer has {EQ_BANDS} bands"),
+        )
+    })?;
+    if bands.iter().any(|db| !db.is_finite()) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidArgs,
+            "an equalizer band needs a number",
+        ));
+    }
+    Ok(bands.map(|db| db.clamp(-MAX_BAND_DB, MAX_BAND_DB)))
+}
+
+fn saved_presets(conn: &Connection) -> Result<Vec<EqPreset>, ApiError> {
+    Ok(saved_setting(conn, EQ_PRESETS_KEY)?
+        .and_then(|value| serde_json::from_str::<Vec<EqPreset>>(&value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|preset| clean_bands(&preset.bands).is_ok())
+        .map(|preset| EqPreset {
+            built_in: false,
+            ..preset
+        })
+        .collect())
+}
+
+fn write_presets(conn: &Connection, presets: &[EqPreset]) -> Result<(), ApiError> {
+    let value = serde_json::to_string(presets)
+        .map_err(|error| ApiError::new(ErrorCode::Internal, error.to_string()))?;
+    save_setting(conn, EQ_PRESETS_KEY, &value)
+}
+
+fn all_presets(conn: &Connection) -> Result<EqPresets, ApiError> {
+    let mut presets: Vec<EqPreset> = BUILT_IN_PRESETS
+        .iter()
+        .map(|(name, bands)| EqPreset {
+            name: (*name).to_owned(),
+            bands: bands.to_vec(),
+            built_in: true,
+        })
+        .collect();
+    let mut saved = saved_presets(conn)?;
+    saved.sort_by_key(|preset| preset.name.to_lowercase());
+    presets.extend(saved);
+    Ok(EqPresets {
+        frequencies: EQ_FREQUENCIES.to_vec(),
+        presets,
+    })
+}
+
+fn is_built_in(name: &str) -> bool {
+    BUILT_IN_PRESETS
+        .iter()
+        .any(|(built_in, _)| built_in.eq_ignore_ascii_case(name))
 }
 
 impl Default for PlayerSettings {
@@ -86,6 +206,7 @@ impl Default for PlayerSettings {
             volume: 1.0,
             replay_gain: ReplayGainMode::Off,
             preamp_db: 0.0,
+            eq: EqSettings::default(),
         }
     }
 }
@@ -128,10 +249,21 @@ fn load_settings(conn: &Connection) -> Result<PlayerSettings, ApiError> {
         Some("album") => ReplayGainMode::Album,
         _ => defaults.replay_gain,
     };
+    let eq = saved_setting(conn, EQ_KEY)?
+        .and_then(|value| serde_json::from_str::<EqSettings>(&value).ok())
+        .and_then(|eq| {
+            let bands = clean_bands(&eq.bands).ok()?;
+            Some(EqSettings {
+                enabled: eq.enabled,
+                bands: bands.to_vec(),
+            })
+        })
+        .unwrap_or(defaults.eq);
     Ok(PlayerSettings {
         volume: number(VOLUME_KEY)?.map_or(defaults.volume, |volume| volume.clamp(0.0, 1.0)),
         replay_gain,
         preamp_db: number(PREAMP_KEY)?.map_or(defaults.preamp_db, clamp_preamp),
+        eq,
     })
 }
 
@@ -144,6 +276,13 @@ fn gain_command(settings: &PlayerSettings) -> PlayerCommand {
         replay_gain: settings.replay_gain,
         preamp_db: settings.preamp_db,
     }
+}
+
+fn eq_command(eq: &EqSettings) -> Result<PlayerCommand, ApiError> {
+    Ok(PlayerCommand::SetEq {
+        enabled: eq.enabled,
+        bands_db: clean_bands(&eq.bands)?,
+    })
 }
 
 /// An engine that takes commands. Its events go to the callback it was created with.
@@ -397,6 +536,7 @@ impl Player {
                 volume: settings.volume,
             })
             .and_then(|()| started.send(&gain_command(&settings)))
+            .and_then(|()| started.send(&eq_command(&settings.eq).map_err(|error| error.message)?))
             .and_then(|()| started.send(command))
             .map_err(Self::failure)?;
         *backend = Some(started);
@@ -590,9 +730,9 @@ impl Player {
 
     fn settings_changed(&self) -> Result<PlayerSettings, ApiError> {
         let settings = self.settings()?;
-        self.shared
-            .events
-            .emit(&CoreEvent::PlayerSettingsChanged { settings });
+        self.shared.events.emit(&CoreEvent::PlayerSettingsChanged {
+            settings: settings.clone(),
+        });
         Ok(settings)
     }
 
@@ -627,6 +767,79 @@ impl Player {
             save_setting(conn, PREAMP_KEY, &preamp_db.to_string())
         })?;
         self.settings_changed()
+    }
+
+    /// Sets the equalizer. It applies at once and is saved.
+    pub fn set_eq(&self, enabled: bool, bands: &[f32]) -> Result<PlayerSettings, ApiError> {
+        let eq = EqSettings {
+            enabled,
+            bands: clean_bands(bands)?.to_vec(),
+        };
+        self.tell_running_engine(&eq_command(&eq)?);
+        let value = serde_json::to_string(&eq)
+            .map_err(|error| ApiError::new(ErrorCode::Internal, error.to_string()))?;
+        self.shared
+            .db
+            .write(|conn| save_setting(conn, EQ_KEY, &value))?;
+        self.settings_changed()
+    }
+
+    pub fn eq_presets(&self) -> Result<EqPresets, ApiError> {
+        self.shared.db.read(all_presets)
+    }
+
+    /// Saves a preset, replacing one of that name unless it comes with the app.
+    pub fn save_eq_preset(&self, name: &str, bands: &[f32]) -> Result<EqPresets, ApiError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ApiError::new(
+                ErrorCode::InvalidArgs,
+                "a preset needs a name",
+            ));
+        }
+        if is_built_in(name) {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                format!("{name} comes with the app, so choose another name"),
+            ));
+        }
+        let bands = clean_bands(bands)?.to_vec();
+        let presets = self.shared.db.write(|conn| {
+            let tx = conn.transaction()?;
+            let mut saved = saved_presets(&tx)?;
+            saved.retain(|preset| !preset.name.eq_ignore_ascii_case(name));
+            saved.push(EqPreset {
+                name: name.to_owned(),
+                bands,
+                built_in: false,
+            });
+            write_presets(&tx, &saved)?;
+            let presets = all_presets(&tx)?;
+            tx.commit()?;
+            Ok::<_, ApiError>(presets)
+        })?;
+        self.shared.events.emit(&CoreEvent::EqPresetsChanged);
+        Ok(presets)
+    }
+
+    pub fn delete_eq_preset(&self, name: &str) -> Result<EqPresets, ApiError> {
+        if is_built_in(name) {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                format!("{name} comes with the app, so it cannot be removed"),
+            ));
+        }
+        let presets = self.shared.db.write(|conn| {
+            let tx = conn.transaction()?;
+            let mut saved = saved_presets(&tx)?;
+            saved.retain(|preset| !preset.name.eq_ignore_ascii_case(name));
+            write_presets(&tx, &saved)?;
+            let presets = all_presets(&tx)?;
+            tx.commit()?;
+            Ok::<_, ApiError>(presets)
+        })?;
+        self.shared.events.emit(&CoreEvent::EqPresetsChanged);
+        Ok(presets)
     }
 
     pub fn gain_coverage(&self) -> Result<GainCoverage, ApiError> {
@@ -764,7 +977,9 @@ mod tests {
                 .filter(|command| {
                     !matches!(
                         command,
-                        PlayerCommand::SetVolume { .. } | PlayerCommand::SetGain { .. }
+                        PlayerCommand::SetVolume { .. }
+                            | PlayerCommand::SetGain { .. }
+                            | PlayerCommand::SetEq { .. }
                     )
                 })
                 .collect()
@@ -1209,6 +1424,7 @@ mod tests {
                 volume: 0.25,
                 replay_gain: ReplayGainMode::Album,
                 preamp_db: -3.5,
+                eq: EqSettings::default(),
             }
         );
         assert!(fixture.all_commands().is_empty(), "no engine was started");
@@ -1254,7 +1470,8 @@ mod tests {
                 preamp_db: 2.0,
             }
         );
-        assert!(matches!(commands[2], PlayerCommand::Load { .. }));
+        assert!(matches!(commands[2], PlayerCommand::SetEq { .. }));
+        assert!(matches!(commands[3], PlayerCommand::Load { .. }));
     }
 
     #[test]
@@ -1274,6 +1491,135 @@ mod tests {
                 .unwrap()
                 .contains(&CoreEvent::PlayerSettingsChanged { settings })
         );
+    }
+
+    fn bands(first: f32) -> Vec<f32> {
+        let mut bands = vec![0.0; EQ_BANDS];
+        bands[0] = first;
+        bands
+    }
+
+    #[test]
+    fn the_equalizer_is_saved_kept_in_range_and_reaches_a_new_engine() {
+        let fixture = fixture();
+        assert!(!fixture.player.settings().unwrap().eq.enabled);
+
+        let settings = fixture.player.set_eq(true, &bands(40.0)).unwrap();
+        assert_eq!(settings.eq.bands[0], MAX_BAND_DB);
+        assert_eq!(fixture.player.settings().unwrap().eq, settings.eq);
+
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        let mut expected = [0.0; EQ_BANDS];
+        expected[0] = MAX_BAND_DB;
+        assert!(fixture.all_commands().contains(&PlayerCommand::SetEq {
+            enabled: true,
+            bands_db: expected,
+        }));
+    }
+
+    #[test]
+    fn a_running_engine_gets_equalizer_changes_at_once() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        fixture.player.set_eq(false, &bands(3.0)).unwrap();
+        let mut expected = [0.0; EQ_BANDS];
+        expected[0] = 3.0;
+        assert_eq!(
+            fixture.all_commands().last(),
+            Some(&PlayerCommand::SetEq {
+                enabled: false,
+                bands_db: expected,
+            })
+        );
+    }
+
+    #[test]
+    fn a_wrong_number_of_bands_is_refused_and_changes_nothing() {
+        let fixture = fixture();
+        fixture.player.set_eq(true, &bands(3.0)).unwrap();
+        let error = fixture.player.set_eq(true, &[1.0, 2.0]).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgs);
+        assert_eq!(fixture.player.settings().unwrap().eq.bands[0], 3.0);
+    }
+
+    #[test]
+    fn a_damaged_saved_equalizer_falls_back_to_off() {
+        let fixture = fixture();
+        fixture
+            .db
+            .write(|conn| save_setting(conn, EQ_KEY, r#"{"enabled":true,"bands":[1,2]}"#))
+            .unwrap();
+        assert_eq!(fixture.player.settings().unwrap().eq, EqSettings::default());
+        fixture
+            .db
+            .write(|conn| save_setting(conn, EQ_KEY, "not json"))
+            .unwrap();
+        assert_eq!(fixture.player.settings().unwrap().eq, EqSettings::default());
+    }
+
+    #[test]
+    fn presets_list_the_built_in_ones_first_and_saved_ones_by_name() {
+        let fixture = fixture();
+        let listed = fixture.player.eq_presets().unwrap();
+        assert_eq!(listed.frequencies.len(), EQ_BANDS);
+        assert_eq!(listed.presets.len(), BUILT_IN_PRESETS.len());
+        assert!(listed.presets.iter().all(|preset| preset.built_in));
+
+        fixture
+            .player
+            .save_eq_preset(" zebra ", &bands(1.0))
+            .unwrap();
+        let listed = fixture.player.save_eq_preset("Apple", &bands(2.0)).unwrap();
+        let names: Vec<&str> = listed
+            .presets
+            .iter()
+            .map(|preset| preset.name.as_str())
+            .collect();
+        assert_eq!(names[BUILT_IN_PRESETS.len()..], ["Apple", "zebra"]);
+        assert!(!listed.presets.last().unwrap().built_in);
+    }
+
+    #[test]
+    fn saving_a_preset_under_its_own_name_replaces_it() {
+        let fixture = fixture();
+        fixture.player.save_eq_preset("Mine", &bands(1.0)).unwrap();
+        let listed = fixture.player.save_eq_preset("MINE", &bands(2.0)).unwrap();
+        let mine: Vec<&EqPreset> = listed
+            .presets
+            .iter()
+            .filter(|preset| !preset.built_in)
+            .collect();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].bands[0], 2.0);
+    }
+
+    #[test]
+    fn built_in_presets_cannot_be_replaced_or_removed() {
+        let fixture = fixture();
+        let replace = fixture
+            .player
+            .save_eq_preset("flat", &bands(1.0))
+            .unwrap_err();
+        assert_eq!(replace.code, ErrorCode::Conflict);
+        let remove = fixture.player.delete_eq_preset("Flat").unwrap_err();
+        assert_eq!(remove.code, ErrorCode::Conflict);
+        assert_eq!(
+            fixture.player.eq_presets().unwrap().presets[0].bands,
+            vec![0.0; EQ_BANDS]
+        );
+    }
+
+    #[test]
+    fn a_preset_can_be_deleted_and_a_blank_name_is_refused() {
+        let fixture = fixture();
+        fixture.player.save_eq_preset("Mine", &bands(1.0)).unwrap();
+        let listed = fixture.player.delete_eq_preset("Mine").unwrap();
+        assert_eq!(listed.presets.len(), BUILT_IN_PRESETS.len());
+        let blank = fixture
+            .player
+            .save_eq_preset("  ", &bands(1.0))
+            .unwrap_err();
+        assert_eq!(blank.code, ErrorCode::InvalidArgs);
     }
 
     #[test]

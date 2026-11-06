@@ -1,5 +1,6 @@
 // What the views show about playback. It follows the player client's updates.
 
+import type { EqPresets } from "../api/generated/EqPresets";
 import type { PlayerSettings } from "../api/generated/PlayerSettings";
 import type { PlayerStatus } from "../api/generated/PlayerStatus";
 import { app } from "../state/app.svelte";
@@ -8,6 +9,7 @@ import { playerClient } from "./client";
 class PlayerState {
   status = $state.raw<PlayerStatus | null>(null);
   settings = $state.raw<PlayerSettings | null>(null);
+  eqPresets = $state.raw<EqPresets | null>(null);
   positionMs = $state(0);
   /** Increases when the player playlist changes, so views showing it reload. */
   queueVersion = $state(0);
@@ -18,6 +20,10 @@ class PlayerState {
     this.status && this.status.state !== "stopped" ? (this.status.track?.id ?? null) : null,
   );
 
+  private async loadEqPresets(): Promise<void> {
+    this.eqPresets = await playerClient.eqPresets();
+  }
+
   async start(): Promise<() => void> {
     const stop = await playerClient.subscribe((update) => {
       if (update.kind === "status") {
@@ -27,6 +33,8 @@ class PlayerState {
         this.positionMs = update.positionMs;
       } else if (update.kind === "settings") {
         this.settings = update.settings;
+      } else if (update.kind === "eqPresets") {
+        void this.loadEqPresets();
       } else if (update.kind === "queue") {
         this.queueVersion++;
         if (update.replaced) this.queueReplacements++;
@@ -35,6 +43,7 @@ class PlayerState {
       }
     });
     this.settings = await playerClient.settings();
+    await this.loadEqPresets();
     this.status = await playerClient.status();
     this.positionMs = this.status.positionMs;
     return stop;

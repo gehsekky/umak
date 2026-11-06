@@ -56,7 +56,7 @@ impl OutputTap for Peak {
 fn rendering_never_allocates_in_any_state() {
     let chain = EffectChain::new(vec![Box::new(Halve)]);
     let (mut feeds, mut renderer, shared) =
-        render::channel(48_000, 2, chain, Some(Box::new(Peak(0.0))));
+        render::channel(48_000, 48_000, 2, chain, Some(Box::new(Peak(0.0))));
     let gain = TrackGain {
         track_db: Some(-6.0),
         track_peak: Some(0.9),
@@ -74,7 +74,9 @@ fn rendering_never_allocates_in_any_state() {
             1 => shared.set_paused(false),
             2 => {
                 shared.set_volume(if pass % 2 == 0 { 0.25 } else { 0.75 });
-                shared.set_gain(ReplayGainMode::Album, 1.0);
+                // Loud enough that the limiter works, while the equalizer moves.
+                shared.set_gain(ReplayGainMode::Album, 12.0);
+                shared.set_eq(pass % 2 == 0, &[pass as f32 % 12.0; 10]);
             }
             3 => {
                 shared.request_flush();

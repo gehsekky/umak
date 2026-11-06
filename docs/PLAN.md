@@ -558,6 +558,8 @@ Edits reach the engine as the new list plus where each entry came from, so the e
 
 ReplayGain results, November 2026: gain changes on the audio thread at the exact frame a track starts, through a lock-free queue of track levels, so settings apply at once and joins stay sample-accurate. Off is the default, because only 1,395 of 21,387 tracks in the library (6.5%) have ReplayGain values and they average about -5 dB, so turning it on leaves untagged tracks louder than tagged ones. Analyzing the library with EBU R128 would give every track a value.
 
+The fixed chain runs on the audio thread as: ReplayGain and preamp, equalizer, plugin slots, limiter, then volume. The limiter has no lookahead, so it adds no latency and does not hold back the end of a track; it reacts within the frame that goes over and recovers over about 100 ms. With ReplayGain off, the equalizer flat or off, and no plugins, both stages are bypassed and samples are left exactly as decoded.
+
 Not in this phase unless asked for: crossfade, EBU R128 analysis, parametric EQ, AutoEq import, linear-phase mode, device selection, shuffle and repeat, album art, a waveform seek bar, and WASAPI exclusive output.
 
 Exit criteria:

@@ -8,8 +8,10 @@ use std::time::Instant;
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use crate::effects::{EffectChain, OutputTap};
-use crate::protocol::{ReplayGainMode, TrackGain};
+use crate::effects::{Effect, EffectChain, OutputTap};
+use crate::eq::{EqControl, Equalizer};
+use crate::limiter::Limiter;
+use crate::protocol::{EQ_BANDS, ReplayGainMode, TrackGain};
 
 /// How long a change of volume or gain takes, so it does not click. 10 ms at 48 kHz.
 const RAMP_FRAMES: f32 = 480.0;
@@ -142,6 +144,7 @@ pub struct Shared {
     longest_gap_us: AtomicU64,
     replay_gain: AtomicU8,
     preamp_bits: AtomicU32,
+    eq: Arc<EqControl>,
 }
 
 impl Shared {
@@ -157,6 +160,7 @@ impl Shared {
             longest_gap_us: AtomicU64::new(0),
             replay_gain: AtomicU8::new(MODE_OFF),
             preamp_bits: AtomicU32::new(1.0_f32.to_bits()),
+            eq: Arc::default(),
         }
     }
 
@@ -178,6 +182,10 @@ impl Shared {
         self.replay_gain.store(mode, Ordering::Relaxed);
         self.preamp_bits
             .store(from_db(preamp_db).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_eq(&self, enabled: bool, bands_db: &[f32; EQ_BANDS]) {
+        self.eq.set(enabled, bands_db);
     }
 
     pub fn played_frames(&self) -> u64 {
@@ -217,7 +225,9 @@ pub struct Renderer {
     consumer: Consumer<f32>,
     shared: Arc<Shared>,
     channels: usize,
+    equalizer: Equalizer,
     chain: EffectChain,
+    limiter: Limiter,
     tap: Option<Box<dyn OutputTap>>,
     /// Whether samples have flowed since the last flush, so silence means an underrun.
     active: bool,
@@ -238,6 +248,7 @@ pub struct Feeds {
 /// Creates the queues to the audio thread. The sample queue's capacity is in samples.
 pub fn channel(
     capacity: usize,
+    sample_rate: u32,
     channels: usize,
     chain: EffectChain,
     tap: Option<Box<dyn OutputTap>>,
@@ -247,8 +258,10 @@ pub fn channel(
     let shared = Arc::new(Shared::new());
     let renderer = Renderer {
         consumer,
-        shared: Arc::clone(&shared),
         channels,
+        equalizer: Equalizer::new(sample_rate, channels, Arc::clone(&shared.eq)),
+        limiter: Limiter::new(sample_rate),
+        shared: Arc::clone(&shared),
         chain,
         tap,
         active: false,
@@ -346,9 +359,23 @@ impl Renderer {
             }
         }
 
+        // The fixed signal chain. Each stage runs once, in this order.
         let (audio, silence) = output.split_at_mut(written);
+        if resuming {
+            self.equalizer.restart();
+            self.limiter.restart();
+        }
         self.apply_gain(audio, first_frame, resuming);
+        self.equalizer.process(audio, self.channels);
         self.chain.process(audio, self.channels);
+        // Nothing has changed the level when these are all off, and then the samples are
+        // left exactly as decoded, even any that decoding left over full scale.
+        if self.shared.replay_gain.load(Ordering::Relaxed) != MODE_OFF
+            || self.equalizer.is_active()
+            || !self.chain.is_empty()
+        {
+            self.limiter.process(audio, self.channels);
+        }
         let volume = f32::from_bits(self.shared.volume_bits.load(Ordering::Relaxed));
         if resuming {
             self.volume.jump_to(volume);
@@ -377,7 +404,7 @@ mod tests {
     }
 
     fn rig() -> (Feeds, Renderer, Arc<Shared>) {
-        let mut parts = channel(96_000, 2, EffectChain::default(), None);
+        let mut parts = channel(96_000, 48_000, 2, EffectChain::default(), None);
         let block = vec![SAMPLE; 40_000];
         let _ = parts.0.samples.push_partial_slice(&block);
         parts
