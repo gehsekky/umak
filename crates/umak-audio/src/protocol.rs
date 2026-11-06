@@ -1,5 +1,5 @@
-//! Typed player commands and events. `umak-play` carries them as one JSON object per
-//! line over stdin and stdout; an in-process engine would use the same types.
+//! Typed player commands and events. The app passes them to the engine in-process, and
+//! `umak-play` carries them as one JSON object per line over stdin and stdout.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

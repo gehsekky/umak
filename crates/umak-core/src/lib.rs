@@ -7,6 +7,8 @@ pub mod db;
 pub mod jobs;
 pub mod library;
 pub mod player;
+#[cfg(feature = "engine")]
+pub mod player_engine;
 pub mod playlists;
 pub mod scan;
 pub mod stats;

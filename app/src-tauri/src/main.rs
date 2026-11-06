@@ -8,6 +8,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use umak_core::api::{self, ApiError, Core, CoreEvent, EventSink};
 use umak_core::db::{Database, DbError};
+use umak_core::player_engine::EnginePlayer;
 
 const EVENT_CHANNEL: &str = "umak:event";
 /// Points the app at another data folder, so test runs leave the real database alone.
@@ -33,7 +34,11 @@ fn call(core: State<'_, Core>, name: String, args: Value) -> Result<Value, ApiEr
 
 fn manage_core<R: Runtime>(app: &AppHandle<R>, database: &Path) -> Result<(), DbError> {
     let db = Database::open(database)?;
-    app.manage(Core::new(db, Box::new(TauriEvents(app.clone())))?);
+    app.manage(Core::with_player(
+        db,
+        Box::new(TauriEvents(app.clone())),
+        Box::new(EnginePlayer::spawn),
+    )?);
     Ok(())
 }
 

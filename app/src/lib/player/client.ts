@@ -1,5 +1,5 @@
 // The one interface the UI uses to reach the player. This implementation goes through
-// the core, which runs the umak-play process; a later in-process engine or a remote
+// the core, which runs the engine in-process; a remote
 // player needs a new implementation of this interface and no change to any view.
 
 import { call, onCoreEvent } from "../api/client";

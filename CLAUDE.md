@@ -4,7 +4,7 @@ A local-first desktop music library manager, tagger and player, built with Tauri
 
 ## Current phase
 
-Phase 1: Library foundation. See "Phase 1 brief" in `docs/PLAN.md`. Work one phase at a time; each ends with the exit criteria under Milestones.
+Phase 2: Player. See "Phase 2 brief" in `docs/PLAN.md`. Phase 1 is complete. Work one phase at a time; each ends with the exit criteria under Milestones.
 
 ## Hard rules
 
@@ -27,7 +27,7 @@ Phase 1: Library foundation. See "Phase 1 brief" in `docs/PLAN.md`. Work one pha
 ```
 crates/umak-core/     library, database, scanner, tag model
 crates/umak-audio/    engine, playlist, EQ, plugin host
-crates/umak-play/     lightweight player executable
+crates/umak-play/     player test tool around the engine
 crates/umak-scan/     headless scan and benchmark tool
 crates/umak-convert/  FFmpeg job runner (later phase)
 crates/umak-server/   OpenSubsonic (later phase)
@@ -42,7 +42,8 @@ Run from the repository root:
 - `cargo test --workspace`: Rust tests.
 - `cargo run -p umak-scan -- <database> [folder]... [--threads N] [--samples N] [--no-scan] [--list N] [--json]`: scan folders into a database and print statistics, including album grouping and tagging problems. Keep test databases outside the repository.
 - `cargo run --release -p umak-scan -- bench <database>`: time queries against the 10 ms target. `rawio <folder>...` times listing and reading with no parsing, and `generate <folder> <count>` writes synthetic tracks. Results so far are in `docs/benchmarks-phase1.md`.
-- `cargo run -p umak-play -- <file>...`: play files. With no files it takes JSON commands on stdin. `--volume N` sets the gain, `--null-output` makes no sound, and `--check <file>...` decodes files without playing them. For tests of the app, `UMAK_PLAY_OUTPUT=null` uses no device and `UMAK_PLAY_OUTPUT=muted` runs the real device at zero gain. Underruns and device stalls are logged to `player-health.log` beside the database.
+- `cargo run -p umak-play -- <file>...`: play files. With no files it takes JSON commands on stdin. `--volume N` sets the gain, `--null-output` makes no sound, and `--check <file>...` decodes files without playing them.
+- `cargo test -p umak-core --features engine`: include the tests of the engine inside the core. `cargo test --workspace` already includes them, because the app turns the feature on.
 - `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio`.
 
 Run from `app/` (run `npm install` first):
@@ -53,6 +54,8 @@ Run from `app/` (run `npm install` first):
 - `npx tauri build --no-bundle`: build the release executable at `target/release/umak-app.exe`.
 - Set `VITE_UMAK_THEME=test` when building to try the test theme.
 - Set `UMAK_DATA_DIR` to run the app against another data folder, leaving the real database alone.
+- Set `UMAK_PLAY_OUTPUT` to test the app without sound: `null` uses no device and `muted` runs the real device at zero gain.
+- Underruns and device stalls are logged to `player-health.log` beside the database.
 
 TypeScript stays on version 6 until `svelte-check` supports version 7.
 

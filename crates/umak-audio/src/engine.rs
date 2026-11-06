@@ -72,6 +72,13 @@ impl Engine {
         let _ = self.commands.send(command);
     }
 
+    /// Like `send`, but reports an engine that has ended.
+    pub fn try_send(&self, command: PlayerCommand) -> Result<(), String> {
+        self.commands
+            .send(command)
+            .map_err(|_| "the audio engine has stopped".to_owned())
+    }
+
     /// Waits for the engine to end, which a Quit command causes.
     pub fn join(mut self) {
         if let Some(thread) = self.thread.take() {

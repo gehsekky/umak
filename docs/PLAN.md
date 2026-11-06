@@ -97,7 +97,7 @@ The UI sends commands and receives state events; remote clients will use the HTT
 
 - `umak-core`: library, database, scanner, tag model.
 - `umak-audio`: decoding, output, playlist and playback state, effects and plugin host, FFT tap.
-- `umak-play`: a thin executable around `umak-audio` that takes typed player commands over stdin and reports events over stdout.
+- `umak-play`: a thin test tool around `umak-audio` that takes typed player commands over stdin and reports events over stdout.
 - `umak-scan`: a headless binary that runs the core without a UI.
 - `umak-convert`: FFmpeg job runner.
 - `umak-server`: axum, OpenSubsonic and the management API (later phase).
@@ -107,7 +107,7 @@ The UI sends commands and receives state events; remote clients will use the HTT
 
 The core runs the audio engine on its own real-time thread and the scanner on a worker pool. The UI never touches audio or the database directly; it only sends commands and renders state. The same core compiles to a headless binary for server-only use.
 
-In phase 1 the audio engine runs in the separate `umak-play` process, so the library can be built and tested with a minimal player. The app reaches it through a player client interface. Phase 2 adds an in-process implementation of that interface, and the UI does not change. `umak-play` stays as a test tool. The player protocol lives in `umak-audio` without its `engine` feature, so `umak-core` can speak it without building any audio code.
+In phase 1 the audio engine ran in the separate `umak-play` process. Since phase 2 it runs in-process behind the `PlayerBackend` interface, on its own threads, and the UI did not change. Its events are handled on a separate thread, because the handlers use the database and must never hold up decoding. `umak-play` stays as a test tool. The player protocol lives in `umak-audio` without its `engine` feature, and `umak-core` turns the engine on only through its own `engine` feature, so headless tools build no audio code.
 
 **Repository layout: one monorepo**
 
@@ -119,7 +119,7 @@ umak/
   crates/
     umak-core/      library, database, scanner, tag model
     umak-audio/     engine, playlist, EQ, plugin host
-    umak-play/      lightweight player executable
+    umak-play/      player test tool around the engine
     umak-scan/      headless scan and benchmark tool
     umak-convert/   FFmpeg job runner
     umak-server/    OpenSubsonic (later)
@@ -533,6 +533,28 @@ Exit criteria:
 - An export imported into a clean second installation restores its playlists and per-user data, and reports any missing files.
 - Single songs and playlists play through `umak-play` in MP3, FLAC and M4A, including 24-bit/192 kHz files.
 - A test theme can restyle the app by changing tokens only.
+
+**Phase 2 brief**
+
+Goal: the real player. One list, gapless, at a consistent volume, with an EQ, and controls in the app. Build order:
+
+1. In-process engine behind `PlayerBackend`, replacing the `umak-play` process. The UI does not change.
+2. Gapless playback: decode the next track early and join at the sample boundary, honoring encoder delay and padding. The position and current track change exactly at the join.
+3. Queue operations and the queue panel: add to queue, play next, reorder, remove, clear, and save as a playlist. The engine takes edits to the list without restarting playback.
+4. Volume as a saved setting, then preamp and ReplayGain from the stored tag values.
+5. EQ and limiter as effects in the fixed signal chain: a 10-band graphic EQ with saved presets, new coefficients sent to the audio thread without locks, and changes smoothed to avoid clicks.
+6. The player bar: transport, seek, volume, and now-playing text.
+
+Not in this phase unless asked for: crossfade, EBU R128 analysis, parametric EQ, AutoEq import, linear-phase mode, device selection, shuffle and repeat, album art, a waveform seek bar, and WASAPI exclusive output.
+
+Exit criteria:
+
+- Single songs, albums and saved playlists play through one list.
+- Joins are gapless: captured output across a join has no added or missing samples, including MP3 with encoder delay and across sample rates.
+- ReplayGain and the EQ change the output by the expected amount in measured tests, and the limiter keeps boosted audio under full scale.
+- The audio thread still never allocates, with the EQ and limiter running.
+- No underruns during a large import, checked with the health log.
+- A listening check confirms it sounds right.
 
 ## Milestones, risks and open questions
 

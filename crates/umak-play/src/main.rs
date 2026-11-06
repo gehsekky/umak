@@ -20,9 +20,6 @@ With files, plays them in order and exits.
   --null-output      discard audio at real-time speed instead of using a device
   --volume N         output gain from 0 to 1
   --check            decode each file fully without playing it, and report";
-/// For tests of the app around the player: `null` uses no device at all, and `muted`
-/// runs the real device at zero gain, so timing is real but nothing is audible.
-const OUTPUT_VARIABLE: &str = "UMAK_PLAY_OUTPUT";
 const NULL_RATE: u32 = 48_000;
 const NULL_CHANNELS: u16 = 2;
 
@@ -35,10 +32,8 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut parsed = Args {
-        null_output: std::env::var(OUTPUT_VARIABLE).is_ok_and(|value| value == "null"),
-        volume: std::env::var(OUTPUT_VARIABLE)
-            .is_ok_and(|value| value == "muted")
-            .then_some(0.0),
+        null_output: false,
+        volume: None,
         check: false,
         files: Vec::new(),
     };

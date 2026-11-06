@@ -7,6 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Plays through the engine inside this process. Without it the core only speaks the
+# player protocol and builds no audio code.
+engine = ["umak-audio/engine"]
+
 [dependencies]
 serde.workspace = true
 umak-audio.workspace = true

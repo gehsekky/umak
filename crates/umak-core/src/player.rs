@@ -1,14 +1,11 @@
 //! The player client. The core owns the player playlist in the database and talks to
-//! an engine through `PlayerBackend`: the `umak-play` process in phase 1, an in-process
-//! engine later. Every way of playing something replaces that one list.
+//! an engine through `PlayerBackend`, so where the engine runs can change without
+//! changing callers. Every way of playing something replaces that one list.
 
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
@@ -21,9 +18,6 @@ use crate::db::{Database, DbError};
 use crate::library::{TRACK_COLUMNS, TrackRow};
 use crate::playlists;
 
-/// Overrides where to find the player program.
-const PLAYER_PATH_VARIABLE: &str = "UMAK_PLAY_PATH";
-const PLAYER_NAME: &str = "umak-play";
 /// How much playback can be lost if the app ends without warning.
 const SAVE_POSITION_EVERY_MS: u64 = 5000;
 /// Written next to the database when playback has a problem, so a stutter leaves
@@ -32,9 +26,6 @@ const HEALTH_LOG_NAME: &str = "player-health.log";
 const MAX_HEALTH_LOG_BYTES: u64 = 256 * 1024;
 /// A device normally asks for audio every 10 ms or so. This is well past that.
 const STALL_US: u64 = 100_000;
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +77,11 @@ pub enum BackendSignal {
     Event(PlayerEvent),
     /// The engine ended without being asked to.
     Exited,
+}
+
+/// For a core that does not play, such as a headless tool.
+pub fn no_engine(_events: BackendEvents) -> Result<Box<dyn PlayerBackend>, String> {
+    Err("this build has no audio engine".to_owned())
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -380,86 +376,6 @@ impl Player {
             _ => (0, 0),
         };
         self.load(tracks, start, start_ms)
-    }
-}
-
-/// Runs `umak-play` as a child process. It exits when its stdin closes, so it cannot
-/// outlive the app even if the app crashes.
-pub struct ProcessPlayer {
-    child: Child,
-    stdin: ChildStdin,
-    closing: Arc<AtomicBool>,
-}
-
-fn player_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os(PLAYER_PATH_VARIABLE) {
-        return Ok(PathBuf::from(path));
-    }
-    let app = std::env::current_exe().map_err(|error| error.to_string())?;
-    let path = app.with_file_name(format!("{PLAYER_NAME}{}", std::env::consts::EXE_SUFFIX));
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(format!(
-            "the player program was not found at {}",
-            path.display()
-        ))
-    }
-}
-
-impl ProcessPlayer {
-    pub fn spawn(events: BackendEvents) -> Result<Box<dyn PlayerBackend>, String> {
-        let mut command = Command::new(player_path()?);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("could not start the player: {error}"))?;
-        let stdin = child.stdin.take().ok_or("the player has no stdin")?;
-        let stdout = child.stdout.take().ok_or("the player has no stdout")?;
-        let closing = Arc::new(AtomicBool::new(false));
-        let reader_closing = Arc::clone(&closing);
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                match serde_json::from_str::<PlayerEvent>(&line) {
-                    Ok(event) => events(BackendSignal::Event(event)),
-                    Err(error) => eprintln!("bad message from the player: {error}"),
-                }
-            }
-            if !reader_closing.load(Ordering::SeqCst) {
-                events(BackendSignal::Exited);
-            }
-        });
-        Ok(Box::new(Self {
-            child,
-            stdin,
-            closing,
-        }))
-    }
-}
-
-impl PlayerBackend for ProcessPlayer {
-    fn send(&mut self, command: &PlayerCommand) -> Result<(), String> {
-        let line = serde_json::to_string(command).map_err(|error| error.to_string())?;
-        writeln!(self.stdin, "{line}")
-            .and_then(|()| self.stdin.flush())
-            .map_err(|error| error.to_string())
-    }
-}
-
-impl Drop for ProcessPlayer {
-    fn drop(&mut self) {
-        self.closing.store(true, Ordering::SeqCst);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 

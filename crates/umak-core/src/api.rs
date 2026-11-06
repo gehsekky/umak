@@ -18,7 +18,7 @@ use ts_rs::TS;
 use crate::db::{Database, DbError, new_public_id};
 use crate::jobs::{JobInfo, JobKind, JobOutcome, JobRunner};
 use crate::library::{self, TrackPage, TrackSort};
-use crate::player::{BackendFactory, Player, PlayerAction, PlayerStatus, ProcessPlayer};
+use crate::player::{BackendFactory, Player, PlayerAction, PlayerStatus, no_engine};
 use crate::playlists::{self, Playlist, PlaylistPage};
 use crate::scan::{self, ScanError, ScanOptions};
 use crate::transfer::{self, ExportSummary, ImportPreview, RootChoice};
@@ -119,8 +119,9 @@ pub struct Core {
 }
 
 impl Core {
+    /// Creates a core that cannot play. See `with_player`.
     pub fn new(db: Database, events: Box<dyn EventSink>) -> Result<Self, DbError> {
-        Self::with_player(db, events, Box::new(ProcessPlayer::spawn))
+        Self::with_player(db, events, Box::new(no_engine))
     }
 
     /// Creates a core that plays through a given backend.
