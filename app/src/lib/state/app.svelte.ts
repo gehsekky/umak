@@ -11,6 +11,7 @@ export type View =
   | { kind: "library" }
   | { kind: "folders" }
   | { kind: "import" }
+  | { kind: "settings" }
   | { kind: "playlist"; id: string };
 
 /** A background job reading the library: a scan, or the scan inside an import. */

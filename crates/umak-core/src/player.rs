@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use umak_audio::protocol::{PlaybackState, PlayerCommand, PlayerEvent, TrackEntry};
+use umak_audio::protocol::{PlaybackState, PlayerCommand, PlayerEvent, ReplayGainMode, TrackEntry};
 
 use crate::api::{ApiError, CoreEvent, ErrorCode, EventSink};
 use crate::db::{Database, DbError};
@@ -26,6 +26,11 @@ const HEALTH_LOG_NAME: &str = "player-health.log";
 const MAX_HEALTH_LOG_BYTES: u64 = 256 * 1024;
 /// A device normally asks for audio every 10 ms or so. This is well past that.
 const STALL_US: u64 = 100_000;
+const VOLUME_KEY: &str = "player.volume";
+const REPLAY_GAIN_KEY: &str = "player.replayGain";
+const PREAMP_KEY: &str = "player.preampDb";
+/// The preamp's range in decibels.
+const MAX_PREAMP_DB: f32 = 12.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +66,83 @@ impl Default for PlayerStatus {
             duration_ms: None,
             device: None,
         }
+    }
+}
+
+/// How playback is leveled. These are saved, and each new engine starts with them.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerSettings {
+    /// Output gain from 0 to 1.
+    pub volume: f32,
+    pub replay_gain: ReplayGainMode,
+    /// Decibels on top of the ReplayGain value. Applies unless ReplayGain is off.
+    pub preamp_db: f32,
+}
+
+impl Default for PlayerSettings {
+    fn default() -> Self {
+        Self {
+            volume: 1.0,
+            replay_gain: ReplayGainMode::Off,
+            preamp_db: 0.0,
+        }
+    }
+}
+
+/// How much of the library has ReplayGain tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct GainCoverage {
+    pub tracks: u32,
+    pub with_track_gain: u32,
+    pub with_album_gain: u32,
+}
+
+fn saved_setting(conn: &Connection, key: &str) -> Result<Option<String>, ApiError> {
+    Ok(conn
+        .prepare_cached("SELECT value FROM settings WHERE key = ?1")?
+        .query_row([key], |row| row.get(0))
+        .optional()?)
+}
+
+fn save_setting(conn: &Connection, key: &str, value: &str) -> Result<(), ApiError> {
+    conn.prepare_cached(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+    )?
+    .execute([key, value])?;
+    Ok(())
+}
+
+/// Reads the saved settings. A value that makes no sense falls back to its default.
+fn load_settings(conn: &Connection) -> Result<PlayerSettings, ApiError> {
+    let defaults = PlayerSettings::default();
+    let number = |key: &str| -> Result<Option<f32>, ApiError> {
+        Ok(saved_setting(conn, key)?
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite()))
+    };
+    let replay_gain = match saved_setting(conn, REPLAY_GAIN_KEY)?.as_deref() {
+        Some("track") => ReplayGainMode::Track,
+        Some("album") => ReplayGainMode::Album,
+        _ => defaults.replay_gain,
+    };
+    Ok(PlayerSettings {
+        volume: number(VOLUME_KEY)?.map_or(defaults.volume, |volume| volume.clamp(0.0, 1.0)),
+        replay_gain,
+        preamp_db: number(PREAMP_KEY)?.map_or(defaults.preamp_db, clamp_preamp),
+    })
+}
+
+fn clamp_preamp(preamp_db: f32) -> f32 {
+    preamp_db.clamp(-MAX_PREAMP_DB, MAX_PREAMP_DB)
+}
+
+fn gain_command(settings: &PlayerSettings) -> PlayerCommand {
+    PlayerCommand::SetGain {
+        replay_gain: settings.replay_gain,
+        preamp_db: settings.preamp_db,
     }
 }
 
@@ -309,7 +391,14 @@ impl Player {
         let shared = Arc::clone(&self.shared);
         let callback: BackendEvents = Arc::new(move |signal| shared.handle(signal));
         let mut started = (lock(&self.factory))(callback).map_err(Self::failure)?;
-        started.send(command).map_err(Self::failure)?;
+        let settings = self.settings()?;
+        started
+            .send(&PlayerCommand::SetVolume {
+                volume: settings.volume,
+            })
+            .and_then(|()| started.send(&gain_command(&settings)))
+            .and_then(|()| started.send(command))
+            .map_err(Self::failure)?;
         *backend = Some(started);
         Ok(())
     }
@@ -488,6 +577,74 @@ impl Player {
         Ok(())
     }
 
+    pub fn settings(&self) -> Result<PlayerSettings, ApiError> {
+        self.shared.db.read(load_settings)
+    }
+
+    /// Applies a command to a running engine. A later engine gets it from the settings.
+    fn tell_running_engine(&self, command: &PlayerCommand) {
+        if let Some(running) = lock(&self.backend).as_mut() {
+            let _ = running.send(command);
+        }
+    }
+
+    fn settings_changed(&self) -> Result<PlayerSettings, ApiError> {
+        let settings = self.settings()?;
+        self.shared
+            .events
+            .emit(&CoreEvent::PlayerSettingsChanged { settings });
+        Ok(settings)
+    }
+
+    /// Sets the output gain, from 0 to 1.
+    pub fn set_volume(&self, volume: f32) -> Result<PlayerSettings, ApiError> {
+        let volume = volume.clamp(0.0, 1.0);
+        // The engine first, because the database may be waiting on a scan.
+        self.tell_running_engine(&PlayerCommand::SetVolume { volume });
+        self.shared
+            .db
+            .write(|conn| save_setting(conn, VOLUME_KEY, &volume.to_string()))?;
+        self.settings_changed()
+    }
+
+    pub fn set_gain(
+        &self,
+        replay_gain: ReplayGainMode,
+        preamp_db: f32,
+    ) -> Result<PlayerSettings, ApiError> {
+        let preamp_db = clamp_preamp(preamp_db);
+        self.tell_running_engine(&PlayerCommand::SetGain {
+            replay_gain,
+            preamp_db,
+        });
+        let mode = match replay_gain {
+            ReplayGainMode::Off => "off",
+            ReplayGainMode::Track => "track",
+            ReplayGainMode::Album => "album",
+        };
+        self.shared.db.write(|conn| {
+            save_setting(conn, REPLAY_GAIN_KEY, mode)?;
+            save_setting(conn, PREAMP_KEY, &preamp_db.to_string())
+        })?;
+        self.settings_changed()
+    }
+
+    pub fn gain_coverage(&self) -> Result<GainCoverage, ApiError> {
+        self.shared.db.read(|conn: &Connection| {
+            Ok(conn
+                .prepare_cached(
+                    "SELECT count(*), count(rg_track_gain), count(rg_album_gain) FROM tracks",
+                )?
+                .query_row([], |row| {
+                    Ok(GainCoverage {
+                        tracks: row.get(0)?,
+                        with_track_gain: row.get(1)?,
+                        with_album_gain: row.get(2)?,
+                    })
+                })?)
+        })
+    }
+
     /// Resumes the last session's list and position.
     fn restore(&self) -> Result<(), ApiError> {
         let _list = lock(&self.list);
@@ -596,8 +753,21 @@ mod tests {
     }
 
     impl Fixture {
-        fn commands(&self) -> Vec<PlayerCommand> {
+        fn all_commands(&self) -> Vec<PlayerCommand> {
             self.engine.commands.lock().unwrap().clone()
+        }
+
+        /// The commands that drive playback, without the settings a new engine starts with.
+        fn commands(&self) -> Vec<PlayerCommand> {
+            self.all_commands()
+                .into_iter()
+                .filter(|command| {
+                    !matches!(
+                        command,
+                        PlayerCommand::SetVolume { .. } | PlayerCommand::SetGain { .. }
+                    )
+                })
+                .collect()
         }
 
         fn signal(&self, event: PlayerEvent) {
@@ -831,7 +1001,7 @@ mod tests {
             tracks,
             start_index,
             start_ms,
-        } = &commands[0]
+        } = commands.last().unwrap()
         else {
             panic!("expected a load, got {commands:?}");
         };
@@ -1018,6 +1188,119 @@ mod tests {
             panic!("expected an edit, got {commands:?}");
         };
         assert!(tracks.is_empty() && origin.is_empty());
+    }
+
+    #[test]
+    fn settings_default_to_no_processing_and_are_saved() {
+        let fixture = fixture();
+        assert_eq!(
+            fixture.player.settings().unwrap(),
+            PlayerSettings::default()
+        );
+
+        fixture.player.set_volume(0.25).unwrap();
+        fixture
+            .player
+            .set_gain(ReplayGainMode::Album, -3.5)
+            .unwrap();
+        assert_eq!(
+            fixture.player.settings().unwrap(),
+            PlayerSettings {
+                volume: 0.25,
+                replay_gain: ReplayGainMode::Album,
+                preamp_db: -3.5,
+            }
+        );
+        assert!(fixture.all_commands().is_empty(), "no engine was started");
+    }
+
+    #[test]
+    fn settings_are_kept_in_range_and_bad_saved_values_fall_back() {
+        let fixture = fixture();
+        assert_eq!(fixture.player.set_volume(7.0).unwrap().volume, 1.0);
+        assert_eq!(fixture.player.set_volume(-1.0).unwrap().volume, 0.0);
+        let settings = fixture
+            .player
+            .set_gain(ReplayGainMode::Track, 40.0)
+            .unwrap();
+        assert_eq!(settings.preamp_db, MAX_PREAMP_DB);
+
+        fixture
+            .db
+            .write(|conn| {
+                save_setting(conn, VOLUME_KEY, "loud")?;
+                save_setting(conn, REPLAY_GAIN_KEY, "maybe")?;
+                save_setting(conn, PREAMP_KEY, "NaN")
+            })
+            .unwrap();
+        assert_eq!(
+            fixture.player.settings().unwrap(),
+            PlayerSettings::default()
+        );
+    }
+
+    #[test]
+    fn a_new_engine_starts_with_the_saved_settings_before_anything_plays() {
+        let fixture = fixture();
+        fixture.player.set_volume(0.5).unwrap();
+        fixture.player.set_gain(ReplayGainMode::Track, 2.0).unwrap();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        let commands = fixture.all_commands();
+        assert_eq!(commands[0], PlayerCommand::SetVolume { volume: 0.5 });
+        assert_eq!(
+            commands[1],
+            PlayerCommand::SetGain {
+                replay_gain: ReplayGainMode::Track,
+                preamp_db: 2.0,
+            }
+        );
+        assert!(matches!(commands[2], PlayerCommand::Load { .. }));
+    }
+
+    #[test]
+    fn a_running_engine_gets_changes_at_once_and_views_are_told() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        let settings = fixture.player.set_volume(0.5).unwrap();
+        assert_eq!(
+            fixture.all_commands().last(),
+            Some(&PlayerCommand::SetVolume { volume: 0.5 })
+        );
+        assert!(
+            fixture
+                .events
+                .0
+                .lock()
+                .unwrap()
+                .contains(&CoreEvent::PlayerSettingsChanged { settings })
+        );
+    }
+
+    #[test]
+    fn coverage_counts_the_tags_in_the_library() {
+        let fixture = fixture();
+        fixture
+            .db
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE tracks SET rg_track_gain = -1.0 WHERE public_id IN ('a', 'b')",
+                    [],
+                )?;
+                conn.execute(
+                    "UPDATE tracks SET rg_album_gain = -1.0 WHERE public_id = 'a'",
+                    [],
+                )?;
+                Ok::<_, DbError>(())
+            })
+            .unwrap();
+        assert_eq!(
+            fixture.player.gain_coverage().unwrap(),
+            GainCoverage {
+                tracks: 3,
+                with_track_gain: 2,
+                with_album_gain: 1,
+            }
+        );
     }
 
     #[test]

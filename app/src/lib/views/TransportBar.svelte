@@ -3,6 +3,7 @@
   import { actionLabel, runAction } from "../actions/registry";
   import { formatDuration } from "../lists/format";
   import { player } from "../player/state.svelte";
+  import { gainToSlider, latestOnly, sliderToGain } from "../player/volume";
   import { app } from "../state/app.svelte";
 
   const status = $derived(player.status);
@@ -13,6 +14,10 @@
   // While the handle is held, it follows the pointer instead of the playback.
   let dragValue = $state<number | null>(null);
   const shownPosition = $derived(dragValue ?? player.positionMs);
+
+  const sendVolume = latestOnly((volume: number) => runAction("player.setVolume", { volume }));
+  let dragVolume = $state<number | null>(null);
+  const shownVolume = $derived(dragVolume ?? gainToSlider(player.settings?.volume ?? 1));
 </script>
 
 <div class="bar">
@@ -70,6 +75,22 @@
     }}
   />
   <span class="time">{formatDuration(isActive ? duration : 0)}</span>
+  <input
+    class="volume"
+    type="range"
+    min="0"
+    max="1"
+    step="0.01"
+    value={shownVolume}
+    disabled={!player.settings}
+    aria-label={actionLabel("player.setVolume")}
+    title="{actionLabel('player.setVolume')} {Math.round(shownVolume * 100)}%"
+    oninput={(event) => {
+      dragVolume = event.currentTarget.valueAsNumber;
+      sendVolume(sliderToGain(dragVolume));
+    }}
+    onchange={() => (dragVolume = null)}
+  />
   <button
     class:on={app.queueOpen}
     title="{actionLabel('queue.togglePanel')} (Ctrl+Q)"
@@ -82,7 +103,7 @@
 <style>
   .bar {
     display: grid;
-    grid-template-columns: auto minmax(8em, 16em) auto minmax(0, 1fr) auto auto;
+    grid-template-columns: auto minmax(8em, 16em) auto minmax(0, 1fr) auto auto auto;
     gap: var(--space-sm);
     align-items: center;
     padding: var(--space-xs) var(--space-md);
@@ -149,9 +170,14 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .seek {
+  .seek,
+  .volume {
     width: 100%;
     margin: 0;
     accent-color: var(--color-accent);
+  }
+
+  .volume {
+    width: 6em;
   }
 </style>

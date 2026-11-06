@@ -14,13 +14,11 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use rtrb::Producer;
-
 use crate::decoder::Decoder;
 use crate::effects::{EffectChain, OutputTap};
 use crate::output::{AudioOutput, OutputFormat};
 use crate::protocol::{PlaybackState, PlayerCommand, PlayerEvent, TrackEntry};
-use crate::render::{self, Shared};
+use crate::render::{self, Feeds, GainChange, Shared};
 use crate::resample::{RateConverter, map_channels};
 use crate::source::{AudioSource, LocalFile};
 
@@ -125,7 +123,7 @@ struct Join {
 struct Worker {
     receiver: Receiver<PlayerCommand>,
     events: EventSink,
-    producer: Producer<f32>,
+    feeds: Feeds,
     shared: Arc<Shared>,
     format: OutputFormat,
     capacity: usize,
@@ -162,7 +160,7 @@ impl Worker {
         let format = output.format();
         let channels = usize::from(format.channels);
         let capacity = format.sample_rate as usize * channels * QUEUE_SECONDS;
-        let (producer, renderer, shared) =
+        let (feeds, renderer, shared) =
             render::channel(capacity, channels, chain.effects, chain.tap);
         let stream = match output.start(renderer) {
             Ok(stream) => stream,
@@ -176,7 +174,7 @@ impl Worker {
         Ok(Self {
             receiver,
             events,
-            producer,
+            feeds,
             shared,
             format,
             capacity,
@@ -274,6 +272,10 @@ impl Worker {
             }
             PlayerCommand::Seek { ms } => self.seek(ms),
             PlayerCommand::SetVolume { volume } => self.shared.set_volume(volume),
+            PlayerCommand::SetGain {
+                replay_gain,
+                preamp_db,
+            } => self.shared.set_gain(replay_gain, preamp_db),
             PlayerCommand::Quit => {}
         }
     }
@@ -321,7 +323,7 @@ impl Worker {
             let position_ms = self.position_ms();
             (self.events)(PlayerEvent::Position { position_ms });
             let channels = u64::from(self.format.channels);
-            let queued = (self.capacity - self.producer.slots()) as u64 / channels;
+            let queued = (self.capacity - self.feeds.samples.slots()) as u64 / channels;
             let underruns = self.shared.underruns();
             (self.events)(PlayerEvent::Health {
                 underruns,
@@ -400,6 +402,7 @@ impl Worker {
                     decoder,
                     announced: true,
                 });
+                self.queue_gain(played, opened);
                 self.index = Some(opened);
                 self.set_state(PlaybackState::Playing);
             }
@@ -407,6 +410,13 @@ impl Worker {
                 self.index = None;
                 self.set_state(PlaybackState::Stopped);
             }
+        }
+    }
+
+    /// Tells the audio thread a track's levels, for when its audio starts.
+    fn queue_gain(&mut self, at: u64, index: usize) {
+        if let Some(track) = self.tracks.get(index) {
+            let _ = self.feeds.gains.push(GainChange::new(at, &track.gain));
         }
     }
 
@@ -553,12 +563,13 @@ impl Worker {
         self.advance_tracks();
         let channels = usize::from(self.format.channels);
         if self.sent < self.pending.len() {
-            let room = self.producer.slots();
+            let room = self.feeds.samples.slots();
             let left = self.pending.len() - self.sent;
             let count = room.min(left);
             let count = count - count % channels;
             let (pushed, _) = self
-                .producer
+                .feeds
+                .samples
                 .push_partial_slice(&self.pending[self.sent..self.sent + count]);
             let _ = pushed;
             self.sent += count;
@@ -576,7 +587,7 @@ impl Worker {
             return IDLE_WAIT;
         }
         // Nothing is left to decode, so the list ends when the queue runs out.
-        if self.producer.slots() == self.capacity {
+        if self.feeds.samples.slots() == self.capacity {
             self.advance_tracks();
             self.playing = None;
             self.index = None;
@@ -634,6 +645,8 @@ impl Worker {
                     index: feed.index,
                     duration_ms: feed.decoder.duration_ms(),
                 });
+                let index = feed.index;
+                self.queue_gain(at, index);
             }
         }
         self.mapped.clear();

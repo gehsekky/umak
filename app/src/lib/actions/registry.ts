@@ -1,11 +1,14 @@
 // Every UI action lives here with an ID, a label and a handler, so buttons, shortcuts
 // and later the command palette and context menus all run the same thing.
 
+import type { ReplayGainMode } from "../api/generated/ReplayGainMode";
+
 /** Actions and the arguments they take. */
 export type ActionMap = {
   "nav.library": void;
   "nav.folders": void;
   "nav.playlist": { id: string };
+  "nav.settings": void;
   "library.addFolder": void;
   "library.rescan": void;
   "library.cancelScan": void;
@@ -27,6 +30,8 @@ export type ActionMap = {
   "player.next": void;
   "player.previous": void;
   "player.seek": { ms: number };
+  "player.setVolume": { volume: number };
+  "player.setGain": { replayGain: ReplayGainMode; preampDb: number };
   "queue.togglePanel": void;
   "queue.add": { trackIds: string[] };
   "queue.playNext": { trackIds: string[] };

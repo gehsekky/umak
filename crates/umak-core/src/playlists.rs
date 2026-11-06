@@ -8,7 +8,7 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use crate::api::{ApiError, ErrorCode};
-use umak_audio::protocol::TrackEntry;
+use umak_audio::protocol::{TrackEntry, TrackGain};
 
 use crate::db::{DEFAULT_USER_ID, new_public_id};
 use crate::library::{MAX_PAGE, TRACK_COLUMNS, TrackRow};
@@ -329,7 +329,7 @@ pub fn copy_to_player(conn: &Connection, id: &str) -> Result<(), ApiError> {
 }
 
 /// An edit of the player playlist: the new list, and where each entry was before it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlayerEdit {
     pub tracks: Vec<TrackEntry>,
     pub origin: Vec<Option<usize>>,
@@ -539,7 +539,8 @@ pub fn player_entries(conn: &Connection) -> Result<Vec<TrackEntry>, ApiError> {
     let playlist = player_id(conn)?;
     Ok(conn
         .prepare_cached(
-            "SELECT t.public_id, r.path, t.rel_path
+            "SELECT t.public_id, r.path, t.rel_path,
+                    t.rg_track_gain, t.rg_track_peak, t.rg_album_gain, t.rg_album_peak
              FROM playlist_items i
              JOIN tracks t ON t.id = i.track_id
              JOIN library_roots r ON r.id = t.root_id
@@ -548,9 +549,18 @@ pub fn player_entries(conn: &Connection) -> Result<Vec<TrackEntry>, ApiError> {
         .query_map([playlist], |row| {
             let root: String = row.get(1)?;
             let rel_path: String = row.get(2)?;
+            let number = |column| -> rusqlite::Result<Option<f32>> {
+                Ok(row.get::<_, Option<f64>>(column)?.map(|value| value as f32))
+            };
             Ok(TrackEntry {
                 id: row.get(0)?,
                 path: format!("{root}/{rel_path}"),
+                gain: TrackGain {
+                    track_db: number(3)?,
+                    track_peak: number(4)?,
+                    album_db: number(5)?,
+                    album_peak: number(6)?,
+                },
             })
         })?
         .collect::<Result<_, _>>()?)
@@ -847,6 +857,34 @@ mod tests {
 
     fn names(ids: &[&str]) -> Vec<String> {
         ids.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    #[test]
+    fn player_entries_carry_the_replay_gain_tags_as_stored() {
+        let fixture = fixture();
+        fixture
+            .run(|conn| {
+                conn.execute(
+                    "UPDATE tracks SET rg_track_gain = -7.5, rg_track_peak = 0.5,
+                                       rg_album_gain = -8.25, rg_album_peak = 0.75
+                     WHERE public_id = 'a'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        fixture.set_player(&["a", "b"]);
+        let entries = fixture.run(player_entries).unwrap();
+        assert_eq!(
+            entries[0].gain,
+            TrackGain {
+                track_db: Some(-7.5),
+                track_peak: Some(0.5),
+                album_db: Some(-8.25),
+                album_peak: Some(0.75),
+            }
+        );
+        assert_eq!(entries[1].gain, TrackGain::default());
     }
 
     #[test]

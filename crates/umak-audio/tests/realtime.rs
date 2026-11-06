@@ -5,7 +5,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use umak_audio::effects::{Effect, EffectChain, OutputTap};
-use umak_audio::render;
+use umak_audio::protocol::{ReplayGainMode, TrackGain};
+use umak_audio::render::{self, GainChange};
 
 struct Counting;
 
@@ -54,8 +55,14 @@ impl OutputTap for Peak {
 #[test]
 fn rendering_never_allocates_in_any_state() {
     let chain = EffectChain::new(vec![Box::new(Halve)]);
-    let (mut producer, mut renderer, shared) =
+    let (mut feeds, mut renderer, shared) =
         render::channel(48_000, 2, chain, Some(Box::new(Peak(0.0))));
+    let gain = TrackGain {
+        track_db: Some(-6.0),
+        track_peak: Some(0.9),
+        ..TrackGain::default()
+    };
+    shared.set_gain(ReplayGainMode::Track, 3.0);
     let mut output = vec![0.0_f32; 960];
     let block = vec![0.5_f32; 4800];
 
@@ -65,14 +72,20 @@ fn rendering_never_allocates_in_any_state() {
         match pass % 7 {
             0 => shared.set_paused(true),
             1 => shared.set_paused(false),
-            2 => shared.set_volume(0.25),
+            2 => {
+                shared.set_volume(if pass % 2 == 0 { 0.25 } else { 0.75 });
+                shared.set_gain(ReplayGainMode::Album, 1.0);
+            }
             3 => {
                 shared.request_flush();
             }
             _ => {}
         }
         if pass % 3 == 0 {
-            let _ = producer.push_partial_slice(&block);
+            let _ = feeds.samples.push_partial_slice(&block);
+            let _ = feeds
+                .gains
+                .push(GainChange::new(shared.played_frames() + 100, &gain));
         }
         renderer.render(&mut output);
         count += 1;

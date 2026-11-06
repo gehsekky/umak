@@ -23,6 +23,8 @@ const NULL_CHANNELS: u16 = 2;
 pub struct EnginePlayer {
     engine: Engine,
     closing: Arc<AtomicBool>,
+    /// Holds the gain at zero whatever volume is asked for, for tests of the app.
+    muted: bool,
 }
 
 impl EnginePlayer {
@@ -30,7 +32,7 @@ impl EnginePlayer {
     pub fn spawn(events: BackendEvents) -> Result<Box<dyn PlayerBackend>, String> {
         let output = std::env::var(OUTPUT_VARIABLE).unwrap_or_default();
         let null_output = output == "null";
-        let player = Self::with_output(
+        let mut player = Self::with_output(
             move || -> Result<Box<dyn AudioOutput>, String> {
                 if null_output {
                     Ok(Box::new(NullOutput::new(NULL_RATE, NULL_CHANNELS)))
@@ -41,6 +43,7 @@ impl EnginePlayer {
             events,
         );
         if output == "muted" {
+            player.muted = true;
             player.engine.send(PlayerCommand::SetVolume { volume: 0.0 });
         }
         Ok(Box::new(player))
@@ -65,12 +68,19 @@ impl EnginePlayer {
                 events(BackendSignal::Exited);
             }
         });
-        Self { engine, closing }
+        Self {
+            engine,
+            closing,
+            muted: false,
+        }
     }
 }
 
 impl PlayerBackend for EnginePlayer {
     fn send(&mut self, command: &PlayerCommand) -> Result<(), String> {
+        if self.muted && matches!(command, PlayerCommand::SetVolume { .. }) {
+            return Ok(());
+        }
         self.engine.try_send(command.clone())
     }
 }
@@ -186,6 +196,7 @@ mod tests {
                 tracks: vec![TrackEntry {
                     id: "tone".to_owned(),
                     path: path.to_string_lossy().into_owned(),
+                    gain: Default::default(),
                 }],
                 start_index: 0,
                 start_ms: 0,
@@ -199,6 +210,36 @@ mod tests {
             "the track to play with its handler blocked",
         );
         drop(release);
+    }
+
+    #[test]
+    fn a_muted_player_ignores_the_saved_volume() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tone.wav");
+        wav(&path);
+        let audio_samples = Arc::new(AtomicUsize::new(0));
+        let output = CountingOutput {
+            audio_samples: Arc::clone(&audio_samples),
+        };
+        let mut player = EnginePlayer::with_output(move || Ok(Box::new(output)), Arc::new(|_| {}));
+        player.muted = true;
+        player.engine.send(PlayerCommand::SetVolume { volume: 0.0 });
+        player
+            .send(&PlayerCommand::SetVolume { volume: 1.0 })
+            .unwrap();
+        player
+            .send(&PlayerCommand::Load {
+                tracks: vec![TrackEntry {
+                    id: "tone".to_owned(),
+                    path: path.to_string_lossy().into_owned(),
+                    gain: Default::default(),
+                }],
+                start_index: 0,
+                start_ms: 0,
+            })
+            .unwrap();
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(audio_samples.load(Ordering::SeqCst), 0);
     }
 
     fn signal_log() -> (BackendEvents, Arc<Mutex<Vec<String>>>) {

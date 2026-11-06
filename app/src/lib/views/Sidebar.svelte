@@ -42,6 +42,13 @@
     <span>{actionLabel("nav.folders")}</span>
     <span class="count">{app.roots.length}</span>
   </button>
+  <button
+    class="item"
+    class:active={app.view.kind === "settings"}
+    onclick={() => runAction("nav.settings")}
+  >
+    <span>{actionLabel("nav.settings")}</span>
+  </button>
 </div>
 
 <div class="heading">

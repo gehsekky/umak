@@ -556,6 +556,8 @@ Gapless results, November 2026:
 
 Edits reach the engine as the new list plus where each entry came from, so the engine maps its own position and an edit cannot race a track change. Playback is untouched unless the edit changes audio already queued, which can only be discarded along with the queued part of the current track, so that track then resumes from where it was. Edits on a 30,000-entry list take 28 to 69 ms.
 
+ReplayGain results, November 2026: gain changes on the audio thread at the exact frame a track starts, through a lock-free queue of track levels, so settings apply at once and joins stay sample-accurate. Off is the default, because only 1,395 of 21,387 tracks in the library (6.5%) have ReplayGain values and they average about -5 dB, so turning it on leaves untagged tracks louder than tagged ones. Analyzing the library with EBU R128 would give every track a value.
+
 Not in this phase unless asked for: crossfade, EBU R128 analysis, parametric EQ, AutoEq import, linear-phase mode, device selection, shuffle and repeat, album art, a waveform seek bar, and WASAPI exclusive output.
 
 Exit criteria:

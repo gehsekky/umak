@@ -125,6 +125,7 @@ fn play_files(args: &Args) -> ExitCode {
         .map(|file| TrackEntry {
             id: file.clone(),
             path: file.clone(),
+            gain: Default::default(),
         })
         .collect();
     engine.send(PlayerCommand::Load {

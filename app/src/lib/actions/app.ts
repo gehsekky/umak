@@ -34,6 +34,14 @@ export function registerAppActions(): void {
   });
 
   registerAction({
+    id: "nav.settings",
+    label: "Audio",
+    run: () => {
+      app.view = { kind: "settings" };
+    },
+  });
+
+  registerAction({
     id: "library.addFolder",
     label: "Add folder",
     run: async () => {
@@ -171,6 +179,17 @@ export function registerAppActions(): void {
     run: () => playerClient.control("previous"),
   });
   registerAction({ id: "player.seek", label: "Seek", run: ({ ms }) => playerClient.seek(ms) });
+
+  registerAction({
+    id: "player.setVolume",
+    label: "Volume",
+    run: ({ volume }) => playerClient.setVolume(volume),
+  });
+  registerAction({
+    id: "player.setGain",
+    label: "ReplayGain",
+    run: ({ replayGain, preampDb }) => playerClient.setGain(replayGain, preampDb),
+  });
 
   registerAction({
     id: "queue.togglePanel",

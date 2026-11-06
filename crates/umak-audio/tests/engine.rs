@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use umak_audio::effects::{Effect, EffectChain, OutputTap};
 use umak_audio::engine::{ChainParts, Engine, check_file};
 use umak_audio::output::{AudioOutput, NullOutput, OutputFormat};
-use umak_audio::protocol::{PlaybackState, PlayerCommand, PlayerEvent, TrackEntry};
+use umak_audio::protocol::{PlaybackState, PlayerCommand, PlayerEvent, ReplayGainMode, TrackEntry};
 use umak_audio::render::Renderer;
 
 const OUTPUT_RATE: u32 = 48_000;
@@ -145,6 +145,7 @@ impl Harness {
         TrackEntry {
             id: name.to_owned(),
             path: path.to_str().unwrap().to_owned(),
+            gain: Default::default(),
         }
     }
 
@@ -155,6 +156,7 @@ impl Harness {
         TrackEntry {
             id: name.to_owned(),
             path: path.to_str().unwrap().to_owned(),
+            gain: Default::default(),
         }
     }
 
@@ -466,12 +468,14 @@ fn a_track_that_cannot_open_is_reported_and_skipped() {
             .to_str()
             .unwrap()
             .to_owned(),
+        gain: Default::default(),
     };
     let garbage_path = player._dir.path().join("garbage.mp3");
     fs::write(&garbage_path, b"this is not audio at all").unwrap();
     let garbage = TrackEntry {
         id: "garbage".to_owned(),
         path: garbage_path.to_str().unwrap().to_owned(),
+        gain: Default::default(),
     };
     player.load(vec![gone, garbage, good], 0, 0);
     player.wait_for_track("good");
@@ -493,6 +497,7 @@ fn a_list_of_only_bad_tracks_ends_stopped() {
     let gone = TrackEntry {
         id: "gone".to_owned(),
         path: "no/such/file.flac".to_owned(),
+        gain: Default::default(),
     };
     player.load(vec![gone], 0, 0);
     player.wait_for_stop();
@@ -516,6 +521,7 @@ fn position_events_advance_while_playing() {
         tracks: vec![TrackEntry {
             id: "tone".to_owned(),
             path: path.to_str().unwrap().to_owned(),
+            gain: Default::default(),
         }],
         start_index: 0,
         start_ms: 0,
@@ -729,6 +735,7 @@ fn the_current_track_and_position_change_when_the_join_is_heard() {
         TrackEntry {
             id: name.to_owned(),
             path: path.to_str().unwrap().to_owned(),
+            gain: Default::default(),
         }
     };
     let tracks = vec![entry("first", 0.5), entry("second", 1.0)];
@@ -857,6 +864,7 @@ fn a_bad_track_between_two_good_ones_is_reported_and_leaves_no_gap() {
             .to_str()
             .unwrap()
             .to_owned(),
+        gain: Default::default(),
     };
     let last = player.piece("last", OUTPUT_RATE, 24_000..48_000);
     let joined = player.play_all(vec![first, gone, last]);
@@ -935,6 +943,7 @@ fn mp3_tracks_join_at_their_trimmed_lengths() {
         tracks.push(TrackEntry {
             id: name.to_owned(),
             path: path.to_str().unwrap().to_owned(),
+            gain: Default::default(),
         });
     }
     let audio = player.play_all(tracks);
@@ -961,6 +970,7 @@ fn report_on_real_joins() {
         let entry = |id: &str, path: &str| TrackEntry {
             id: id.to_owned(),
             path: path.to_owned(),
+            gain: Default::default(),
         };
         let check = check_file(pair[0], OUTPUT_RATE).unwrap();
         let start_ms = check.output_frames * 1000 / u64::from(OUTPUT_RATE) - 3000;
@@ -1157,4 +1167,77 @@ fn clearing_the_list_stops_playback() {
     paused_with_the_next_track_queued(&mut player);
     player.edit(Vec::new(), Vec::new());
     player.wait_for_stop();
+}
+
+fn with_track_gain(mut track: TrackEntry, db: f32) -> TrackEntry {
+    track.gain.track_db = Some(db);
+    track
+}
+
+fn set_track_mode(player: &Harness, preamp_db: f32) {
+    player.engine.send(PlayerCommand::SetGain {
+        replay_gain: ReplayGainMode::Track,
+        preamp_db,
+    });
+}
+
+fn peak_of(samples: &[f32]) -> f32 {
+    samples
+        .iter()
+        .fold(0.0, |peak, sample| peak.max(sample.abs()))
+}
+
+#[test]
+fn replay_gain_and_the_preamp_change_the_level_by_the_stated_amount() {
+    let mut player = harness();
+    let plain = player.piece("plain", OUTPUT_RATE, 0..24_000);
+    let level = peak_of(&player.play_all(vec![plain.clone()]));
+
+    set_track_mode(&player, 0.0);
+    let cut = with_track_gain(plain.clone(), -6.0);
+    let measured = peak_of(&player.play_all(vec![cut.clone()])) / level;
+    assert!((measured - 0.501).abs() < 0.002, "-6 dB gave {measured}");
+
+    set_track_mode(&player, 3.0);
+    let measured = peak_of(&player.play_all(vec![cut])) / level;
+    assert!(
+        (measured - 0.708).abs() < 0.002,
+        "-6 + 3 dB gave {measured}"
+    );
+
+    // A track with no tag gets the preamp alone.
+    let measured = peak_of(&player.play_all(vec![plain])) / level;
+    assert!((measured - 1.413).abs() < 0.003, "+3 dB gave {measured}");
+}
+
+#[test]
+fn off_leaves_tagged_tracks_exactly_as_they_are() {
+    let mut whole = harness();
+    let expected = whole.play_all(vec![whole.piece("whole", OUTPUT_RATE, 0..24_000)]);
+    let mut player = harness();
+    let tagged = with_track_gain(player.piece("tagged", OUTPUT_RATE, 0..24_000), -9.0);
+    assert!(player.play_all(vec![tagged]) == expected);
+}
+
+#[test]
+fn each_track_of_a_gapless_join_gets_its_own_gain_at_the_exact_sample() {
+    let mut whole = harness();
+    let expected = whole.play_all(vec![whole.piece("whole", OUTPUT_RATE, 0..48_000)]);
+
+    let mut player = harness();
+    set_track_mode(&player, 0.0);
+    let first = with_track_gain(player.piece("a", OUTPUT_RATE, 0..24_000), -6.0206);
+    let second = with_track_gain(player.piece("b", OUTPUT_RATE, 24_000..48_000), 0.0);
+    let audio = player.play_all(vec![first, second]);
+
+    assert_eq!(audio.len(), expected.len());
+    for (index, (actual, reference)) in audio.iter().zip(&expected).enumerate() {
+        let factor = if index / 2 < 24_000 { 0.5 } else { 1.0 };
+        assert!(
+            (actual - reference * factor).abs() < 1e-3,
+            "frame {}: {actual}, expected {}",
+            index / 2,
+            reference * factor
+        );
+    }
 }

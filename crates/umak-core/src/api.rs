@@ -14,11 +14,14 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
+use umak_audio::protocol::ReplayGainMode;
 
 use crate::db::{Database, DbError, new_public_id};
 use crate::jobs::{JobInfo, JobKind, JobOutcome, JobRunner};
 use crate::library::{self, TrackPage, TrackSort};
-use crate::player::{BackendFactory, Player, PlayerAction, PlayerStatus, no_engine};
+use crate::player::{
+    BackendFactory, GainCoverage, Player, PlayerAction, PlayerSettings, PlayerStatus, no_engine,
+};
 use crate::playlists::{self, Playlist, PlaylistPage};
 use crate::scan::{self, ScanError, ScanOptions};
 use crate::transfer::{self, ExportSummary, ImportPreview, RootChoice};
@@ -72,7 +75,7 @@ impl From<ScanError> for ApiError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum CoreEvent {
     LibraryRootsChanged,
@@ -88,6 +91,10 @@ pub enum CoreEvent {
     /// Playback state or the current track changed.
     PlayerChanged {
         status: Box<PlayerStatus>,
+    },
+    /// The volume or the leveling settings changed.
+    PlayerSettingsChanged {
+        settings: PlayerSettings,
     },
     /// Sent a few times a second during playback.
     #[serde(rename_all = "camelCase")]
@@ -213,6 +220,10 @@ commands![
     ControlPlayer,
     SeekPlayer,
     GetPlayerStatus,
+    GetPlayerSettings,
+    SetPlayerVolume,
+    SetPlayerGain,
+    GetGainCoverage,
     ExportLibrary,
     PreviewImport,
     StartImport,
@@ -952,6 +963,65 @@ impl Command for CancelJob {
         Ok(CancelResult {
             requested: core.jobs.cancel(&self.id),
         })
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetPlayerSettings {}
+
+impl Command for GetPlayerSettings {
+    const NAME: &'static str = "player.settings";
+    type Output = PlayerSettings;
+
+    fn run(self, core: &Core) -> Result<PlayerSettings, ApiError> {
+        core.player.settings()
+    }
+}
+
+/// Sets the output gain, from 0 to 1. It applies at once and is saved.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SetPlayerVolume {
+    pub volume: f32,
+}
+
+impl Command for SetPlayerVolume {
+    const NAME: &'static str = "player.setVolume";
+    type Output = PlayerSettings;
+
+    fn run(self, core: &Core) -> Result<PlayerSettings, ApiError> {
+        core.player.set_volume(self.volume)
+    }
+}
+
+/// Sets how tracks are leveled. It applies at once and is saved.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SetPlayerGain {
+    pub replay_gain: ReplayGainMode,
+    pub preamp_db: f32,
+}
+
+impl Command for SetPlayerGain {
+    const NAME: &'static str = "player.setGain";
+    type Output = PlayerSettings;
+
+    fn run(self, core: &Core) -> Result<PlayerSettings, ApiError> {
+        core.player.set_gain(self.replay_gain, self.preamp_db)
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetGainCoverage {}
+
+impl Command for GetGainCoverage {
+    const NAME: &'static str = "player.gainCoverage";
+    type Output = GainCoverage;
+
+    fn run(self, core: &Core) -> Result<GainCoverage, ApiError> {
+        core.player.gain_coverage()
     }
 }
 

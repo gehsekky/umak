@@ -3,7 +3,10 @@
 // player needs a new implementation of this interface and no change to any view.
 
 import { call, onCoreEvent } from "../api/client";
+import type { GainCoverage } from "../api/generated/GainCoverage";
 import type { PlayerAction } from "../api/generated/PlayerAction";
+import type { PlayerSettings } from "../api/generated/PlayerSettings";
+import type { ReplayGainMode } from "../api/generated/ReplayGainMode";
 import type { PlayerStatus } from "../api/generated/PlayerStatus";
 import type { Playlist } from "../api/generated/Playlist";
 import type { PlaylistPage } from "../api/generated/PlaylistPage";
@@ -12,6 +15,7 @@ export type PlayerUpdate =
   | { kind: "status"; status: PlayerStatus }
   | { kind: "position"; positionMs: number }
   | { kind: "queue"; replaced: boolean }
+  | { kind: "settings"; settings: PlayerSettings }
   | { kind: "error"; message: string };
 
 export interface PlayerClient {
@@ -34,6 +38,12 @@ export interface PlayerClient {
   control(action: PlayerAction): Promise<void>;
   seek(ms: number): Promise<void>;
   status(): Promise<PlayerStatus>;
+  settings(): Promise<PlayerSettings>;
+  /** Sets the output gain, from 0 to 1. */
+  setVolume(volume: number): Promise<void>;
+  setGain(replayGain: ReplayGainMode, preampDb: number): Promise<void>;
+  /** How much of the library has ReplayGain tags. */
+  gainCoverage(): Promise<GainCoverage>;
   subscribe(handler: (update: PlayerUpdate) => void): Promise<() => void>;
 }
 
@@ -77,12 +87,26 @@ export const playerClient: PlayerClient = {
   status() {
     return call("player.status", {});
   },
+  settings() {
+    return call("player.settings", {});
+  },
+  async setVolume(volume) {
+    await call("player.setVolume", { volume });
+  },
+  async setGain(replayGain, preampDb) {
+    await call("player.setGain", { replayGain, preampDb });
+  },
+  gainCoverage() {
+    return call("player.gainCoverage", {});
+  },
   subscribe(handler) {
     return onCoreEvent((event) => {
       if (event.type === "playerChanged") {
         handler({ kind: "status", status: event.status });
       } else if (event.type === "playerPosition") {
         handler({ kind: "position", positionMs: event.positionMs });
+      } else if (event.type === "playerSettingsChanged") {
+        handler({ kind: "settings", settings: event.settings });
       } else if (event.type === "queueChanged") {
         handler({ kind: "queue", replaced: event.replaced });
       } else if (event.type === "playerError") {

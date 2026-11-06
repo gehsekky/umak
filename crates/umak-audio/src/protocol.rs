@@ -4,10 +4,33 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackEntry {
     pub id: String,
     pub path: String,
+    #[serde(default)]
+    pub gain: TrackGain,
+}
+
+/// A track's ReplayGain tags, as written in the file. The gains are in decibels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackGain {
+    pub track_db: Option<f32>,
+    pub track_peak: Option<f32>,
+    pub album_db: Option<f32>,
+    pub album_peak: Option<f32>,
+}
+
+/// Which ReplayGain value to play by. A track lacking that one uses the other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ReplayGainMode {
+    /// Samples pass through unchanged, and the preamp does not apply.
+    #[default]
+    Off,
+    Track,
+    Album,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,6 +61,12 @@ pub enum PlayerCommand {
     /// Output gain from 0 to 1. 1 leaves the samples unchanged.
     SetVolume {
         volume: f32,
+    },
+    /// How to level tracks. The preamp is in decibels, on top of the ReplayGain value.
+    #[serde(rename_all = "camelCase")]
+    SetGain {
+        replay_gain: ReplayGainMode,
+        preamp_db: f32,
     },
     Quit,
 }

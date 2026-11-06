@@ -7,6 +7,7 @@
   import LibraryView from "./lib/views/LibraryView.svelte";
   import PlaylistView from "./lib/views/PlaylistView.svelte";
   import QueueView from "./lib/views/QueueView.svelte";
+  import SettingsView from "./lib/views/SettingsView.svelte";
   import Sidebar from "./lib/views/Sidebar.svelte";
   import StatusBar from "./lib/views/StatusBar.svelte";
   import TransportBar from "./lib/views/TransportBar.svelte";
@@ -17,6 +18,7 @@
   registerView("main", { id: "playlist", component: PlaylistView });
   registerView("main", { id: "folders", component: FoldersView });
   registerView("main", { id: "import", component: ImportView });
+  registerView("main", { id: "settings", component: SettingsView });
   registerView("queue", { id: "queue", component: QueueView });
   registerView("transport", { id: "transport", component: TransportBar });
   registerView("status", { id: "status", component: StatusBar });
