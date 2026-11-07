@@ -69,6 +69,16 @@
     }
   });
 
+  $effect(() => {
+    const wanted = app.librarySearch;
+    if (wanted === null) return;
+    untrack(() => {
+      app.librarySearch = null;
+      query = wanted;
+      showContents();
+    });
+  });
+
   /** Plays the selection if the row is part of it, and otherwise just that song. */
   function activate(row: TrackRow): void {
     const trackIds =

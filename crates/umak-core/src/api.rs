@@ -17,6 +17,7 @@ use ts_rs::TS;
 use umak_audio::protocol::ReplayGainMode;
 
 use crate::db::{Database, DbError, new_public_id};
+use crate::duplicates::{self, DuplicateMatch, DuplicatePage};
 use crate::jobs::{JobInfo, JobKind, JobOutcome, JobRunner};
 use crate::library::{self, TrackPage, TrackSort};
 use crate::player::{
@@ -255,6 +256,7 @@ commands![
     WriteTagEdit,
     DiscardTagEdit,
     UndoTagEdit,
+    GetDuplicates,
 ];
 
 #[derive(Debug, Deserialize, TS)]
@@ -965,6 +967,31 @@ fn start_tag_preview(
         })
     })?;
     Ok(TagEditJob { edit_id, job_id })
+}
+
+/// A page of files that look like copies of each other. A limit of zero gives only the totals.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetDuplicates {
+    pub by: DuplicateMatch,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Command for GetDuplicates {
+    const NAME: &'static str = "duplicates.list";
+    type Output = DuplicatePage;
+
+    fn run(self, core: &Core) -> Result<DuplicatePage, ApiError> {
+        core.db.read(|conn| {
+            Ok(duplicates::duplicate_page(
+                conn,
+                self.by,
+                self.offset,
+                self.limit,
+            )?)
+        })
+    }
 }
 
 /// Reads what files hold now, for an editor to start from. It takes a page of tracks at a time

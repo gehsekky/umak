@@ -181,6 +181,20 @@ pub fn queries(database: &str) -> Result<QueryReport, String> {
     }
     timings.push(summarize("search, deep in the results", samples));
 
+    for by in ["audio", "tags"] {
+        let mut samples = Vec::with_capacity(LIST_RUNS);
+        for _ in 0..LIST_RUNS {
+            let args = json!({ "by": by, "offset": 0, "limit": 100 });
+            let started = Instant::now();
+            dispatch(&core, "duplicates.list", args).map_err(|error| error.message.clone())?;
+            samples.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        timings.push(summarize(
+            &format!("duplicates by {by}, first page"),
+            samples,
+        ));
+    }
+
     Ok(QueryReport {
         tracks: total,
         first_page_after_open_ms,

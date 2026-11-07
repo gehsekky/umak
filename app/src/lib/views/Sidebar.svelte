@@ -51,6 +51,13 @@
   </button>
   <button
     class="item"
+    class:active={app.view.kind === "duplicates"}
+    onclick={() => runAction("nav.duplicates")}
+  >
+    <span>{actionLabel("nav.duplicates")}</span>
+  </button>
+  <button
+    class="item"
     class:active={app.view.kind === "settings"}
     onclick={() => runAction("nav.settings")}
   >

@@ -192,7 +192,7 @@ The scanner assigns each track to an album using the first rule that applies. Gr
 
 **Cleanup tools**
 
-- Duplicate finder by fingerprint and by tag match.
+- Duplicate finder by fingerprint and by tag match. It only reports: the app never deletes a music file, so copies are removed in a file manager and a rescan follows. A tag match needs the same title, artist, album and track number, because the same song played twice in a concert otherwise looks like a copy: in the real library that was 194 of 217 groups.
 - Rename and move files from tag patterns.
 - Identify untagged files with AcoustID fingerprinting and MusicBrainz lookups.
 - Smart playlists defined by rules, such as FLAC, rated 4 or higher, not played in six months.

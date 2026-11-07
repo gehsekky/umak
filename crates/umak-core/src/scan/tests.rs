@@ -10,7 +10,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::api::add_root;
-use crate::db::DEFAULT_USER_ID;
+use crate::db::{DEFAULT_USER_ID, DbError};
 
 const MPEG_FRAME_LEN: usize = 417;
 const MPEG_FRAMES: usize = 60;
@@ -1008,4 +1008,44 @@ fn progress_reaches_the_total() {
     .unwrap();
     assert_eq!(updates.first(), Some(&ScanProgress { done: 0, total: 3 }));
     assert_eq!(updates.last(), Some(&ScanProgress { done: 3, total: 3 }));
+}
+
+#[test]
+fn scanned_copies_are_found_as_duplicates() {
+    use crate::duplicates::{DuplicateMatch, duplicate_page};
+
+    let lib = library();
+    let tags = [
+        ("TIT2", "Song"),
+        ("TPE1", "Artist"),
+        ("TALB", "Album"),
+        ("TRCK", "1"),
+    ];
+    lib.mp3("copy/same.mp3", 1, &tags);
+    lib.mp3("other/same.mp3", 1, &[("TIT2", "Retagged")]);
+    lib.mp3("reencoded/song.mp3", 2, &tags);
+    lib.mp3("elsewhere/different.mp3", 3, &[("TIT2", "Different")]);
+    lib.scan();
+
+    let find = |by| {
+        lib.db
+            .read(|conn| Ok::<_, DbError>(duplicate_page(conn, by, 0, 100)?))
+            .unwrap()
+            .groups
+            .into_iter()
+            .map(|group| group.tracks.into_iter().map(|t| t.rel_path).collect())
+            .collect::<Vec<Vec<String>>>()
+    };
+    assert_eq!(
+        find(DuplicateMatch::Audio),
+        [["copy/same.mp3", "other/same.mp3"]]
+    );
+    assert_eq!(
+        find(DuplicateMatch::Tags),
+        [["copy/same.mp3", "reencoded/song.mp3"]]
+    );
+
+    fs::remove_file(lib.path("other/same.mp3")).unwrap();
+    lib.scan();
+    assert!(find(DuplicateMatch::Audio).is_empty());
 }

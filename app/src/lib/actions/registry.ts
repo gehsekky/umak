@@ -12,10 +12,12 @@ export type ActionMap = {
   "nav.tagEdits": void;
   "nav.tagEditor": void;
   "nav.tagReview": { id: string };
+  "nav.duplicates": void;
   "library.addFolder": void;
   "library.rescan": void;
   "library.cancelScan": void;
   "library.focusSearch": void;
+  "library.showMatches": { query: string };
   "library.export": void;
   "library.chooseImport": void;
   "library.startImport": { path: string; roots: { id: string; path: string | null }[] };

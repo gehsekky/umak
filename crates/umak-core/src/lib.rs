@@ -4,6 +4,7 @@
 
 pub mod api;
 pub mod db;
+pub mod duplicates;
 pub mod jobs;
 pub mod library;
 pub mod player;

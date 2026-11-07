@@ -54,6 +54,21 @@ export function registerAppActions(): void {
     },
   });
   registerAction({
+    id: "nav.duplicates",
+    label: "Duplicates",
+    run: () => {
+      app.view = { kind: "duplicates" };
+    },
+  });
+  registerAction({
+    id: "library.showMatches",
+    label: "Show in library",
+    run: ({ query }) => {
+      app.librarySearch = query;
+      app.view = { kind: "library" };
+    },
+  });
+  registerAction({
     id: "nav.tagEditor",
     label: "Edit tags",
     run: () => {

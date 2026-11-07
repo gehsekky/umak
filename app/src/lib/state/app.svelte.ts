@@ -2,6 +2,7 @@
 
 import { call, onCoreEvent } from "../api/client";
 import type { CoreEvent } from "../api/generated/CoreEvent";
+import type { DuplicateMatch } from "../api/generated/DuplicateMatch";
 import type { ImportPreview } from "../api/generated/ImportPreview";
 import type { ImportReport } from "../api/generated/ImportReport";
 import type { LibraryRoot } from "../api/generated/LibraryRoot";
@@ -16,7 +17,8 @@ export type View =
   | { kind: "playlist"; id: string }
   | { kind: "tagEditor" }
   | { kind: "tagReview"; id: string }
-  | { kind: "tagEdits" };
+  | { kind: "tagEdits" }
+  | { kind: "duplicates" };
 
 /** A background job reading the library: a scan, or the scan inside an import. */
 export type ScanState = { id: string; kind: string; done: number; total: number };
@@ -47,6 +49,10 @@ class AppState {
   importReport = $state.raw<ImportReport | null>(null);
   /** Increases when the search box should take focus. */
   searchFocusRequests = $state(0);
+  /** What the library should search for when it next shows. */
+  librarySearch = $state<string | null>(null);
+  /** Kept here so going to edit a group's tags and back stays on the same comparison. */
+  duplicatesBy = $state<DuplicateMatch>("audio");
   /** Increase when their contents change, so list views know to reload. */
   libraryVersion = $state(0);
   playlistsVersion = $state(0);
