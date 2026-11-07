@@ -596,7 +596,30 @@ Exit criteria:
 - A failed write leaves the file exactly as it was.
 - Ratings and play counts survive an export and import.
 
+**Phase 4 brief**
+
+Goal: convert files in batches without disturbing playback, with tags and art carried across exactly. Build order:
+
+1. `umak-convert`: find FFmpeg (beside the app first, then on the path), check its version and encoders, and run one conversion as a child process with progress read from FFmpeg and cancel by ending the process. No Tauri, like the other crates.
+2. Presets and output: FLAC, MP3 (V0 and 320 kbps), AAC (256 kbps) and Opus (160 kbps), plus custom codec, bitrate, sample rate and bit depth. Output goes to a chosen folder, mirroring each file's folders under its library root, and never over a source file.
+3. Tags and art: FFmpeg writes audio only, and the core's tag writer then copies the source's tags and embedded art onto the new file, so values arrive as written instead of through FFmpeg's metadata mapping. Fields the target format cannot hold are reported, not dropped silently.
+4. Batch jobs: a conversion job in the jobs table, several files at once within a CPU limit, progress, cancel and retry of failed files. Canceling or a failure leaves no partial files. An option adds the converted files to the library.
+5. The UI: Convert as an action on any selection, a dialog for preset, folder and options, and a jobs panel with progress.
+
+Not in this phase unless asked for: applying ReplayGain during conversion, converting in place (replacing originals), naming output from tag patterns, and on-the-fly transcoding for the server.
+
+Exit criteria:
+
+- A batch converts to each preset with tags and embedded art preserved, checked by reading the output independently of FFmpeg.
+- Source files are never changed.
+- Cancel and failures leave no partial output, and failed files can be retried.
+- Playback has no underruns while a batch runs, checked with the health log.
+
+Development uses a locally installed FFmpeg. Shipping needs an LGPL build, chosen and reviewed with the installers in phase 5.
+
 Phase 2 closed in November 2026 at the owner's go-ahead. The listening check in its brief was not separately reported.
+
+Phase 3 closed in November 2026 at the owner's go-ahead, after the owner tested the app.
 
 ## Milestones, risks and open questions
 

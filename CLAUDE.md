@@ -4,7 +4,7 @@ A local-first desktop music library manager, tagger and player, built with Tauri
 
 ## Current phase
 
-Phase 3: Tagging and management. See "Phase 3 brief" in `docs/PLAN.md`. Phases 1 and 2 are complete. Work one phase at a time; each ends with the exit criteria under Milestones.
+Phase 4: Conversion. See "Phase 4 brief" in `docs/PLAN.md`. Phases 1 to 3 are complete. Work one phase at a time; each ends with the exit criteria under Milestones.
 
 ## Hard rules
 
