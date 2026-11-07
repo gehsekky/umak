@@ -13,7 +13,7 @@ Build a local-first music player and library manager that stays fast at about 30
 
 **Must-have capabilities**
 
-- Library: folder scanning, file watching, duplicate detection, smart playlists, batch editing.
+- Library: folder scanning, duplicate detection, smart playlists, batch editing. File watching follows after the MVP.
 - Tagging: read and write ID3v2.3/2.4, Vorbis comments, MP4 atoms, APE, RIFF/AIFF, and ASF where feasible.
 - Player: one player playlist, gapless playback, ReplayGain, an equalizer and limiter, OS media controls.
 - Remote access: an open API so existing client apps can connect, planned for a later phase. Navidrome covers this in the meantime.
@@ -147,12 +147,12 @@ The audio engine runs on its own real-time thread. Commands only send it message
 
 The library engine is the heart of the app. It never modifies music files unless you edit tags or ask to rename or move them, and the database can always be rebuilt from the files.
 
-**Scanner and watcher**
+**Scanner**
 
 - Walk folders and read tags with Lofty, tuning concurrency per storage device. Parallel reads can slow a hard drive, so benchmark rather than assume more threads help. On the hard drive holding the collection, 4 threads was fastest (12.8 ms per cold MP3, against 17.7 with 1 thread and 13.3 with 8).
 - Ignore playlist files (`.m3u`, `.m3u8`). Playlists are created and stored in the app.
 - Skip unchanged files by comparing modified time and size, so rescans are near-instant.
-- Run a file watcher so adds, moves and deletes appear automatically, with no manual rescan. Network shares can miss change notifications, so network roots also get a periodic rescan.
+- Changes made outside the app appear at the next rescan, which the person starts. A file watcher comes after the MVP (see "After the MVP").
 - Detect moved files by a fingerprint of sampled audio data, which tag edits don't change and which never needs a full read of a large file. Track IDs, ratings, play counts and playlist entries survive a reorganization. The fingerprint hashes the audio length and the first 64 KiB of audio: that costs about 1 ms per file, while each extra sample adds a disk seek of about 7 ms. Across 21,387 real files, all 84 groups sharing a fingerprint held byte-identical audio.
 - Mark files that disappear as missing instead of deleting their rows, so playlist entries survive until the file returns.
 
@@ -484,7 +484,7 @@ Each phase should plug into the last without a large refactor. Features arrive i
 | Command palette, keybindings, context menus | UI actions live in one registry, each with an ID, a label and a handler | Palette UI, remapping |
 | Layout changes | Views register into named regions of the app shell | Docking, customizable layouts |
 | Tag editing | The tag model covers multi-value fields and raw tags | Tag writing and undo |
-| File watching | The scanner processes a set of changed paths, so a watcher can feed it | The watcher |
+| File watching | The scanner processes a set of changed paths, so a watcher can feed it | The watcher, after the MVP |
 | Conversion, long tasks | Long operations are cancelable jobs that report progress | FFmpeg runner |
 | Later settings | One typed, versioned settings store | Most of the settings |
 | Later schema and export changes | Numbered migrations and a versioned export format | The changes |
@@ -579,23 +579,21 @@ Exit criteria:
 
 **Phase 3 brief**
 
-Goal: fix the library from inside the app. Tag edits are safe and reversible, the library keeps itself up to date, and duplicates and rule-based playlists are easy. Build order:
+Goal: fix the library from inside the app. Tag edits are safe and reversible, and duplicates and rule-based playlists are easy. Build order:
 
 1. The safe tag writer, for MP3, FLAC and M4A, tested against a corpus of copies of real files.
 2. Edit planning: a preview of every change before it is written, batch writes as a cancelable job, library updates after each write, and undo history.
 3. The tag editor UI: batch editing across any selection, with the preview.
-4. The file watcher: adds, moves, changes and deletes appear on their own, with a periodic rescan for network roots.
-5. The duplicate finder, by fingerprint and by tag match.
-6. Ratings and play counts, recorded as they happen, then smart playlists with a rule editor.
+4. The duplicate finder, by fingerprint and by tag match.
+5. Ratings and play counts, recorded as they happen, then smart playlists with a rule editor.
 
-Not in this phase unless asked for: renaming and moving files from tag patterns, AcoustID and MusicBrainz lookups, embedded art editing, and loudness analysis.
+Not in this phase unless asked for: the file watcher, which moved to after the MVP, renaming and moving files from tag patterns, AcoustID and MusicBrainz lookups, embedded art editing, and loudness analysis.
 
 Exit criteria:
 
 - All target tag formats read and write cleanly: MP3 with ID3v2.3 and ID3v2.4, FLAC, and AAC and ALAC in M4A, checked against copies of real files by a comparison independent of the tag library.
 - A batch edit shows every change first, can be canceled, and can be undone.
 - A failed write leaves the file exactly as it was.
-- Changes made outside the app appear without a manual rescan.
 - Ratings and play counts survive an export and import.
 
 Phase 2 closed in November 2026 at the owner's go-ahead. The listening check in its brief was not separately reported.
@@ -606,10 +604,12 @@ Build in six phases, each ending in something usable. The 30k-track test library
 
 1. **Library foundation:** Tauri shell, Rust workspace, schema, library import, search, playlists, export and import between installations, a lightweight player executable, and the extension-point seams. Exit: see the phase 1 brief.
 2. **Player:** the in-process engine, gapless playback and ReplayGain, the EQ and limiter, the player bar and queue panel. Exit: play single songs, albums and saved playlists through one list, with gapless joins.
-3. **Tagging and management:** batch tag editing, duplicate finder, smart playlists, file watcher. Exit: all target tag formats read and write cleanly.
+3. **Tagging and management:** batch tag editing, duplicate finder, smart playlists. Exit: all target tag formats read and write cleanly.
 4. **Conversion:** FFmpeg job queue and presets, built as a reusable service. Exit: batch conversion with tags and art preserved.
 5. **Visualizations and polish:** FFT pipeline, visualizers, OS integration, scrobbling, installers.
 6. **Server (later):** OpenSubsonic through axum on top of the existing command layer, auth, streaming, transcoding, and a headless mode for the NAS. Exit: two third-party clients connect and play.
+
+**After the MVP:** a file watcher, so adds, moves, changes and deletes appear with no manual rescan. Network shares can miss change notifications, so network roots would also get a periodic rescan. The scanner already takes a set of changed paths, so a watcher can feed it.
 
 Nice to have, not scheduled: agent and smart-home control. See "Agent and smart-home control".
 
