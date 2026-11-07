@@ -67,12 +67,20 @@
 
 <div class="heading">
   <h2>Playlists</h2>
-  <button
-    class="add"
-    title="{actionLabel('playlists.startCreate')} (Ctrl+N)"
-    aria-label={actionLabel("playlists.startCreate")}
-    onclick={() => runAction("playlists.startCreate")}>+</button
-  >
+  <span class="adds">
+    <button
+      class="add"
+      title={actionLabel("nav.smartEditor")}
+      aria-label={actionLabel("nav.smartEditor")}
+      onclick={() => runAction("nav.smartEditor", { id: null })}>✦</button
+    >
+    <button
+      class="add"
+      title="{actionLabel('playlists.startCreate')} (Ctrl+N)"
+      aria-label={actionLabel("playlists.startCreate")}
+      onclick={() => runAction("playlists.startCreate")}>+</button
+    >
+  </span>
 </div>
 
 <div class="section scroll">
@@ -95,11 +103,16 @@
   {#each app.playlists as playlist (playlist.id)}
     <button
       class="item"
-      class:active={app.view.kind === "playlist" && app.view.id === playlist.id}
+      class:active={(app.view.kind === "playlist" || app.view.kind === "smartEditor") &&
+        app.view.id === playlist.id}
       onclick={() => runAction("nav.playlist", { id: playlist.id })}
     >
       <span class="name" title={playlist.name}>{playlist.name}</span>
-      <span class="count">{playlist.trackCount.toLocaleString()}</span>
+      {#if playlist.smart}
+        <span class="count" title="Smart playlist" aria-label="Smart playlist">✦</span>
+      {:else}
+        <span class="count">{(playlist.trackCount ?? 0).toLocaleString()}</span>
+      {/if}
     </button>
   {:else}
     {#if !app.creatingPlaylist}
@@ -170,6 +183,11 @@
     color: var(--color-text-muted);
     font-size: var(--font-size-small);
     font-weight: 600;
+  }
+
+  .adds {
+    display: flex;
+    gap: var(--space-xs);
   }
 
   .add {

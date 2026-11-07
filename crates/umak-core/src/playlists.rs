@@ -1,7 +1,9 @@
-//! Saved playlists. Every function here acts on the default user's manual playlists,
-//! so the reserved player playlist cannot be renamed, deleted or edited by accident.
+//! Saved playlists. Every function here acts on the default user's saved playlists, so the
+//! reserved player playlist cannot be renamed, deleted or edited by accident. A smart playlist
+//! holds a rule instead of items, so only what applies to its whole list works on it.
 
 use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -12,6 +14,7 @@ use umak_audio::protocol::{TrackEntry, TrackGain};
 
 use crate::db::{DEFAULT_USER_ID, new_public_id};
 use crate::library::{MAX_PAGE, TRACK_COLUMNS, TrackRow};
+use crate::smart::{self, SmartRule};
 
 /// Item positions leave gaps, so playlists can later insert without renumbering.
 const POSITION_GAP: i64 = 1024;
@@ -21,8 +24,13 @@ const POSITION_GAP: i64 = 1024;
 pub struct Playlist {
     pub id: String,
     pub name: String,
-    pub track_count: u32,
-    pub duration_ms: i64,
+    pub smart: bool,
+    /// The rule of a smart playlist, unless it cannot be read.
+    pub rule: Option<SmartRule>,
+    /// Left empty for a smart playlist: working it out takes a look at the whole library, and
+    /// the answer changes with it, so the playlist's own page asks when it opens.
+    pub track_count: Option<u32>,
+    pub duration_ms: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -39,6 +47,16 @@ pub struct PlaylistItem {
 pub struct PlaylistPage {
     pub items: Vec<PlaylistItem>,
     pub total: u32,
+}
+
+/// A page of what a rule gives, with the totals for the whole list. A limit of zero gives only
+/// the totals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartPreview {
+    pub items: Vec<PlaylistItem>,
+    pub total: u32,
+    pub duration_ms: i64,
 }
 
 fn not_found() -> ApiError {
@@ -65,13 +83,47 @@ fn internal_id(conn: &Connection, public_id: &str) -> Result<i64, ApiError> {
     .ok_or_else(not_found)
 }
 
+/// A saved playlist of either kind, and its rule text if it is a smart one.
+fn saved_id(conn: &Connection, public_id: &str) -> Result<(i64, Option<String>), ApiError> {
+    conn.prepare_cached(
+        "SELECT id, rule FROM playlists
+         WHERE public_id = ?1 AND user_id = ?2 AND kind IN ('manual', 'smart')",
+    )?
+    .query_row(params![public_id, DEFAULT_USER_ID], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })
+    .optional()?
+    .ok_or_else(not_found)
+}
+
+fn parse_rule(text: &str) -> Result<SmartRule, ApiError> {
+    serde_json::from_str(text).map_err(|_| {
+        ApiError::new(
+            ErrorCode::Internal,
+            "this smart playlist's rule cannot be read",
+        )
+    })
+}
+
+fn rule_text(rule: &SmartRule) -> Result<String, ApiError> {
+    rule.check()?;
+    serde_json::to_string(rule)
+        .map_err(|error| ApiError::new(ErrorCode::Internal, error.to_string()))
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
 fn touch(conn: &Connection, playlist: i64, now: i64) -> rusqlite::Result<()> {
     conn.prepare_cached("UPDATE playlists SET updated_at = ?2 WHERE id = ?1")?
         .execute(params![playlist, now])?;
     Ok(())
 }
 
-const SELECT_PLAYLIST: &str = "SELECT p.public_id, p.name,
+const SELECT_PLAYLIST: &str = "SELECT p.public_id, p.name, p.kind, p.rule,
         (SELECT count(*) FROM playlist_items i WHERE i.playlist_id = p.id),
         (SELECT coalesce(sum(t.duration_ms), 0) FROM playlist_items i
          JOIN tracks t ON t.id = i.track_id WHERE i.playlist_id = p.id),
@@ -79,19 +131,23 @@ const SELECT_PLAYLIST: &str = "SELECT p.public_id, p.name,
     FROM playlists p";
 
 fn playlist_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Playlist> {
+    let smart = row.get::<_, String>(2)? == "smart";
+    let rule: Option<String> = row.get(3)?;
     Ok(Playlist {
         id: row.get(0)?,
         name: row.get(1)?,
-        track_count: row.get(2)?,
-        duration_ms: row.get(3)?,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
+        smart,
+        rule: rule.and_then(|text| serde_json::from_str(&text).ok()),
+        track_count: if smart { None } else { Some(row.get(4)?) },
+        duration_ms: if smart { None } else { Some(row.get(5)?) },
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
     })
 }
 
 pub fn list(conn: &Connection) -> Result<Vec<Playlist>, ApiError> {
     let sql = format!(
-        "{SELECT_PLAYLIST} WHERE p.user_id = ?1 AND p.kind = 'manual'
+        "{SELECT_PLAYLIST} WHERE p.user_id = ?1 AND p.kind IN ('manual', 'smart')
          ORDER BY p.name COLLATE NOCASE, p.id"
     );
     Ok(conn
@@ -117,16 +173,84 @@ pub fn create(conn: &Connection, name: &str, now: i64) -> Result<Playlist, ApiEr
     get(conn, conn.last_insert_rowid())
 }
 
+pub fn create_smart(
+    conn: &Connection,
+    name: &str,
+    rule: &SmartRule,
+    now: i64,
+) -> Result<Playlist, ApiError> {
+    let name = clean_name(name)?;
+    conn.prepare_cached(
+        "INSERT INTO playlists (public_id, user_id, name, kind, rule, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'smart', ?4, ?5, ?5)",
+    )?
+    .execute(params![
+        new_public_id(),
+        DEFAULT_USER_ID,
+        name,
+        rule_text(rule)?,
+        now
+    ])?;
+    get(conn, conn.last_insert_rowid())
+}
+
+pub fn update_smart(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    rule: &SmartRule,
+    now: i64,
+) -> Result<Playlist, ApiError> {
+    let name = clean_name(name)?;
+    let (playlist, old_rule) = saved_id(conn, id)?;
+    if old_rule.is_none() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidArgs,
+            "only a smart playlist has a rule to change",
+        ));
+    }
+    conn.prepare_cached(
+        "UPDATE playlists SET name = ?2, rule = ?3, updated_at = ?4 WHERE id = ?1",
+    )?
+    .execute(params![playlist, name, rule_text(rule)?, now])?;
+    get(conn, playlist)
+}
+
+/// What a rule gives, for trying one out before saving it, or for a smart playlist's page.
+pub fn smart_preview(
+    conn: &Connection,
+    rule: &SmartRule,
+    offset: u32,
+    limit: u32,
+) -> Result<SmartPreview, ApiError> {
+    rule.check()?;
+    let now = now_ms();
+    let totals = smart::totals(conn, rule, now)?;
+    let items = if limit == 0 {
+        Vec::new()
+    } else {
+        smart::page(conn, rule, now, offset, limit)?
+            .into_iter()
+            .map(|(position, track)| PlaylistItem { position, track })
+            .collect()
+    };
+    Ok(SmartPreview {
+        items,
+        total: totals.total,
+        duration_ms: totals.duration_ms,
+    })
+}
+
 pub fn rename(conn: &Connection, id: &str, name: &str, now: i64) -> Result<Playlist, ApiError> {
     let name = clean_name(name)?;
-    let playlist = internal_id(conn, id)?;
+    let (playlist, _) = saved_id(conn, id)?;
     conn.prepare_cached("UPDATE playlists SET name = ?2, updated_at = ?3 WHERE id = ?1")?
         .execute(params![playlist, name, now])?;
     get(conn, playlist)
 }
 
 pub fn delete(conn: &Connection, id: &str) -> Result<(), ApiError> {
-    let playlist = internal_id(conn, id)?;
+    let (playlist, _) = saved_id(conn, id)?;
     conn.prepare_cached("DELETE FROM playlists WHERE id = ?1")?
         .execute([playlist])?;
     Ok(())
@@ -138,7 +262,14 @@ pub fn items(
     offset: u32,
     limit: u32,
 ) -> Result<PlaylistPage, ApiError> {
-    let playlist = internal_id(conn, id)?;
+    let (playlist, rule) = saved_id(conn, id)?;
+    if let Some(rule) = rule {
+        let preview = smart_preview(conn, &parse_rule(&rule)?, offset, limit)?;
+        return Ok(PlaylistPage {
+            items: preview.items,
+            total: preview.total,
+        });
+    }
     items_of(conn, playlist, offset, limit)
 }
 
@@ -333,10 +464,16 @@ pub fn album_track_ids(conn: &Connection, track_id: &str) -> Result<Vec<String>,
 
 /// Replaces the player playlist with a copy of a saved playlist.
 pub fn copy_to_player(conn: &Connection, id: &str) -> Result<(), ApiError> {
-    let source = internal_id(conn, id)?;
+    let (source, rule) = saved_id(conn, id)?;
     let playlist = player_id(conn)?;
     conn.prepare_cached("DELETE FROM playlist_items WHERE playlist_id = ?1")?
         .execute([playlist])?;
+    if let Some(rule) = rule {
+        let rule = parse_rule(&rule)?;
+        rule.check()?;
+        smart::insert_into(conn, playlist, &rule, now_ms(), POSITION_GAP)?;
+        return Ok(());
+    }
     conn.prepare_cached(
         "INSERT INTO playlist_items (playlist_id, position, track_id)
          SELECT ?1, position, track_id FROM playlist_items WHERE playlist_id = ?2",
@@ -681,12 +818,157 @@ mod tests {
         }
     }
 
+    fn titled_like(text: &str) -> SmartRule {
+        SmartRule {
+            match_all: true,
+            conditions: vec![smart::SmartCondition {
+                field: smart::SmartField::Title,
+                op: smart::SmartOp::Contains,
+                text: Some(text.to_owned()),
+                number: None,
+            }],
+            sort: smart::SmartSort::Title,
+            descending: true,
+            limit: None,
+        }
+    }
+
+    #[test]
+    fn a_smart_playlist_gives_what_its_rule_says_in_its_order() {
+        let f = fixture();
+        let made = f
+            .run(|conn| create_smart(conn, " Mine ", &titled_like("b"), 5))
+            .unwrap();
+        assert_eq!(made.name, "Mine");
+        assert!(made.smart);
+        assert_eq!(made.rule, Some(titled_like("b")));
+        assert_eq!(made.track_count, None);
+        assert_eq!(f.titles(&made.id), ["b"]);
+
+        let any = SmartRule {
+            conditions: Vec::new(),
+            ..titled_like("")
+        };
+        let changed = f
+            .run(|conn| update_smart(conn, &made.id, "All", &any, 6))
+            .unwrap();
+        assert_eq!(changed.name, "All");
+        assert_eq!(changed.updated_at, 6);
+        assert_eq!(f.titles(&made.id), ["d", "c", "b", "a"]);
+        assert_eq!(f.positions(&made.id), [1, 2, 3, 4]);
+
+        let listed = f.run(list).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].smart);
+
+        let renamed = f.run(|conn| rename(conn, &made.id, "New", 7)).unwrap();
+        assert_eq!(renamed.rule, Some(any));
+        f.run(|conn| delete(conn, &made.id)).unwrap();
+        assert!(f.run(list).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_smart_playlist_has_no_items_of_its_own_to_change() {
+        let f = fixture();
+        let made = f
+            .run(|conn| create_smart(conn, "S", &titled_like("a"), 1))
+            .unwrap();
+        let track = vec!["b".to_owned()];
+        assert!(f.run(|conn| add_tracks(conn, &made.id, &track, 2)).is_err());
+        assert!(f.run(|conn| remove_items(conn, &made.id, &[1], 2)).is_err());
+        assert!(
+            f.run(|conn| move_items(conn, &made.id, &[1], None, 2))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_rule_that_makes_no_sense_is_not_saved_and_only_smart_playlists_have_rules() {
+        let f = fixture();
+        let bad = titled_like("   ");
+        assert!(f.run(|conn| create_smart(conn, "S", &bad, 1)).is_err());
+        assert!(f.run(list).unwrap().is_empty());
+        assert!(f.run(|conn| smart_preview(conn, &bad, 0, 10)).is_err());
+        let manual = f.with_tracks(&["a"]);
+        let good = titled_like("a");
+        assert!(
+            f.run(|conn| update_smart(conn, &manual.id, "S", &good, 1))
+                .is_err()
+        );
+        assert!(f.run(|conn| create_smart(conn, "  ", &good, 1)).is_err());
+    }
+
+    #[test]
+    fn a_preview_gives_totals_and_a_page_and_saves_nothing() {
+        let f = fixture();
+        let all = SmartRule {
+            conditions: Vec::new(),
+            ..titled_like("")
+        };
+        let preview = f.run(|conn| smart_preview(conn, &all, 1, 2)).unwrap();
+        assert_eq!((preview.total, preview.duration_ms), (4, 4000));
+        let titles: Vec<&str> = preview
+            .items
+            .iter()
+            .map(|i| i.track.title.as_str())
+            .collect();
+        assert_eq!(titles, ["c", "b"]);
+        let totals = f.run(|conn| smart_preview(conn, &all, 0, 0)).unwrap();
+        assert!(totals.items.is_empty());
+        assert_eq!(totals.total, 4);
+        assert!(f.run(list).unwrap().is_empty());
+    }
+
+    #[test]
+    fn playing_a_smart_playlist_copies_the_list_as_it_stands() {
+        let f = fixture();
+        let made = f
+            .run(|conn| create_smart(conn, "S", &titled_like("a"), 1))
+            .unwrap();
+        f.run(|conn| copy_to_player(conn, &made.id)).unwrap();
+        let player = f.run(|conn| player_items(conn, 0, 10)).unwrap();
+        let titles: Vec<&str> = player
+            .items
+            .iter()
+            .map(|i| i.track.title.as_str())
+            .collect();
+        assert_eq!(titles, ["a"]);
+
+        // What the player holds stays put when the rule stops matching.
+        let other = titled_like("zzz");
+        f.run(|conn| update_smart(conn, &made.id, "S", &other, 2))
+            .unwrap();
+        assert!(f.titles(&made.id).is_empty());
+        assert_eq!(f.run(|conn| player_items(conn, 0, 10)).unwrap().total, 1);
+    }
+
+    #[test]
+    fn a_damaged_rule_is_reported_instead_of_guessed_at() {
+        let f = fixture();
+        let made = f
+            .run(|conn| create_smart(conn, "S", &titled_like("a"), 1))
+            .unwrap();
+        f.db.write(|conn| {
+            conn.execute(
+                "UPDATE playlists SET rule = 'not json' WHERE kind = 'smart'",
+                [],
+            )?;
+            Ok::<_, DbError>(())
+        })
+        .unwrap();
+        let listed = f.run(list).unwrap();
+        assert!(listed[0].smart);
+        assert_eq!(listed[0].rule, None);
+        assert!(f.run(|conn| items(conn, &made.id, 0, 10)).is_err());
+        assert!(f.run(|conn| copy_to_player(conn, &made.id)).is_err());
+    }
+
     #[test]
     fn a_playlist_can_be_created_renamed_listed_and_deleted() {
         let fixture = fixture();
         let made = fixture.run(|conn| create(conn, "  Road Trip ", 5)).unwrap();
         assert_eq!(made.name, "Road Trip");
-        assert_eq!(made.track_count, 0);
+        assert_eq!(made.track_count, Some(0));
         assert!(uuid::Uuid::parse_str(&made.id).is_ok());
 
         let renamed = fixture
@@ -759,8 +1041,8 @@ mod tests {
     fn tracks_append_in_order_and_may_repeat_and_totals_update() {
         let fixture = fixture();
         let list = fixture.with_tracks(&["b", "a", "b"]);
-        assert_eq!(list.track_count, 3);
-        assert_eq!(list.duration_ms, 3000);
+        assert_eq!(list.track_count, Some(3));
+        assert_eq!(list.duration_ms, Some(3000));
         assert_eq!(list.updated_at, 2);
         assert_eq!(fixture.titles(&list.id), ["b", "a", "b"]);
 
@@ -807,7 +1089,7 @@ mod tests {
         let updated = fixture
             .run(|conn| remove_items(conn, &list.id, &[positions[0]], 5))
             .unwrap();
-        assert_eq!(updated.track_count, 3);
+        assert_eq!(updated.track_count, Some(3));
         assert_eq!(fixture.titles(&list.id), ["b", "a", "c"]);
     }
 
@@ -1068,7 +1350,7 @@ mod tests {
         let fixture = fixture();
         fixture.set_player(&["a", "b"]);
         let saved = fixture.run(|conn| save_player_as(conn, "Kept", 5)).unwrap();
-        assert_eq!(saved.track_count, 2);
+        assert_eq!(saved.track_count, Some(2));
         assert_eq!(fixture.titles(&saved.id), names(&["a", "b"]));
 
         fixture.run(clear_player).unwrap();

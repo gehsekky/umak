@@ -13,6 +13,7 @@
   import StatusBar from "./lib/views/StatusBar.svelte";
   import TagEditorView from "./lib/views/TagEditorView.svelte";
   import DuplicatesView from "./lib/views/DuplicatesView.svelte";
+  import SmartEditorView from "./lib/views/SmartEditorView.svelte";
   import TagHistoryView from "./lib/views/TagHistoryView.svelte";
   import TagReviewView from "./lib/views/TagReviewView.svelte";
 
@@ -27,6 +28,7 @@
   registerView("main", { id: "tagReview", component: TagReviewView });
   registerView("main", { id: "tagEdits", component: TagHistoryView });
   registerView("main", { id: "duplicates", component: DuplicatesView });
+  registerView("main", { id: "smartEditor", component: SmartEditorView });
   registerView("queue", { id: "queue", component: QueueView });
   registerView("transport", { id: "player", component: PlayerBar });
   registerView("status", { id: "status", component: StatusBar });

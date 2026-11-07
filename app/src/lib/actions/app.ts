@@ -61,6 +61,31 @@ export function registerAppActions(): void {
     },
   });
   registerAction({
+    id: "nav.smartEditor",
+    label: "New smart playlist",
+    run: ({ id }) => {
+      app.view = { kind: "smartEditor", id };
+    },
+  });
+  registerAction({
+    id: "playlists.saveSmart",
+    label: "Save smart playlist",
+    run: async ({ id, name, rule }) => {
+      const saved = id
+        ? await call("playlists.smart.update", { id, name, rule })
+        : await call("playlists.smart.create", { name, rule });
+      await app.loadPlaylists();
+      app.view = { kind: "playlist", id: saved.id };
+    },
+  });
+  registerAction({
+    id: "playlists.leaveSmart",
+    label: "Leave without saving",
+    run: ({ id }) => {
+      app.view = id ? { kind: "playlist", id } : { kind: "library" };
+    },
+  });
+  registerAction({
     id: "nav.duplicates",
     label: "Duplicates",
     run: () => {

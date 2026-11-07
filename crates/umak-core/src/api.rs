@@ -24,8 +24,9 @@ use crate::player::{
     BackendFactory, EqPresets, GainCoverage, Player, PlayerAction, PlayerSettings, PlayerStatus,
     no_engine,
 };
-use crate::playlists::{self, Playlist, PlaylistPage};
+use crate::playlists::{self, Playlist, PlaylistPage, SmartPreview};
 use crate::scan::{self, ScanError, ScanOptions};
+use crate::smart::{self, SmartRule};
 use crate::tagedit::{self, TagEdit, TagEditItemPage, TagEditPage, TrackEdits, TrackTagValuesList};
 use crate::transfer::{self, ExportSummary, ImportPreview, RootChoice};
 use crate::user_data;
@@ -259,6 +260,10 @@ commands![
     UndoTagEdit,
     GetDuplicates,
     SetTrackRating,
+    CreateSmartPlaylist,
+    UpdateSmartPlaylist,
+    PreviewSmartRule,
+    ListFormats,
 ];
 
 #[derive(Debug, Deserialize, TS)]
@@ -478,6 +483,85 @@ impl Core {
         })?;
         self.events.emit(&CoreEvent::PlaylistsChanged);
         Ok(result)
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct CreateSmartPlaylist {
+    pub name: String,
+    pub rule: SmartRule,
+}
+
+impl Command for CreateSmartPlaylist {
+    const NAME: &'static str = "playlists.smart.create";
+    type Output = Playlist;
+
+    fn run(self, core: &Core) -> Result<Playlist, ApiError> {
+        core.change_playlists(|conn, now| {
+            playlists::create_smart(conn, &self.name, &self.rule, now)
+        })
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateSmartPlaylist {
+    pub id: String,
+    pub name: String,
+    pub rule: SmartRule,
+}
+
+impl Command for UpdateSmartPlaylist {
+    const NAME: &'static str = "playlists.smart.update";
+    type Output = Playlist;
+
+    fn run(self, core: &Core) -> Result<Playlist, ApiError> {
+        core.change_playlists(|conn, now| {
+            playlists::update_smart(conn, &self.id, &self.name, &self.rule, now)
+        })
+    }
+}
+
+/// What a rule gives, without saving anything. A limit of zero gives only the totals.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewSmartRule {
+    pub rule: SmartRule,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Command for PreviewSmartRule {
+    const NAME: &'static str = "playlists.smart.preview";
+    type Output = SmartPreview;
+
+    fn run(self, core: &Core) -> Result<SmartPreview, ApiError> {
+        core.db
+            .read(|conn| playlists::smart_preview(conn, &self.rule, self.offset, self.limit))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct FormatList {
+    pub formats: Vec<String>,
+}
+
+/// The formats in the library, to choose from in a rule.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListFormats {}
+
+impl Command for ListFormats {
+    const NAME: &'static str = "library.formats";
+    type Output = FormatList;
+
+    fn run(self, core: &Core) -> Result<FormatList, ApiError> {
+        core.db.read(|conn| {
+            Ok(FormatList {
+                formats: smart::formats(conn)?,
+            })
+        })
     }
 }
 

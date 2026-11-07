@@ -20,9 +20,11 @@
     };
   }
 
+  // A smart playlist's order changes as tracks come and go, so its rows are held by track. It
+  // has no track twice, and no entries of its own to hold by position.
   const list = new PagedList<PlaylistItem>(
     source(untrack(() => id)),
-    (item) => item.position,
+    (item) => (app.playlist(id)?.smart ? item.track.id : item.position),
   );
   const selection = new Selection();
   let table = $state<TrackTable<PlaylistItem>>();
@@ -30,6 +32,31 @@
   let nameInput = $state<HTMLInputElement>();
   let draftName = $state("");
   let confirmingDelete = $state(false);
+  /** A smart playlist's totals, which the playlist list leaves to this page to ask for. */
+  let smartTotals = $state<{ total: number; durationMs: number } | null>(null);
+
+  const smart = $derived(playlist?.smart ?? false);
+  const trackCount = $derived(smart ? smartTotals?.total : playlist?.trackCount);
+  const durationMs = $derived(smart ? smartTotals?.durationMs : playlist?.durationMs);
+
+  $effect(() => {
+    const rule = playlist?.rule;
+    void app.libraryVersion;
+    if (!smart || !rule) {
+      smartTotals = null;
+      return;
+    }
+    let current = true;
+    call("playlists.smart.preview", { rule: $state.snapshot(rule), offset: 0, limit: 0 }).then(
+      (page) => {
+        if (current) smartTotals = { total: page.total, durationMs: page.durationMs };
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  });
 
   let shownId = untrack(() => id);
   $effect(() => {
@@ -88,7 +115,7 @@
   /** The selected rows' tracks, in list order. Entries are selected by position. */
   async function selectedTrackIds(): Promise<string[]> {
     const rows = await list.rowsInRange(0, list.total);
-    return rows.filter((item) => selection.has(item.position)).map((item) => item.track.id);
+    return rows.filter((item) => selection.has(list.key(item))).map((item) => item.track.id);
   }
 
   async function removeSelected(): Promise<void> {
@@ -117,17 +144,24 @@
       <h1>{playlist.name}</h1>
     {/if}
     <span class="meta">
-      {countOf(playlist.trackCount, "track")}, {formatTotalTime(playlist.durationMs)}
+      {#if trackCount !== undefined && trackCount !== null}
+        {countOf(trackCount, "track")}, {formatTotalTime(durationMs ?? 0)}
+      {/if}
+      {#if smart}· smart playlist{/if}
     </span>
     <span class="spacer"></span>
     <button
       class="primary"
-      disabled={playlist.trackCount === 0}
+      disabled={!trackCount}
       onclick={() => runAction("player.playPlaylist", { id, startIndex: 0 })}
     >
       {actionLabel("player.playPlaylist")}
     </button>
-    <button onclick={startRename}>Rename</button>
+    {#if smart}
+      <button onclick={() => runAction("nav.smartEditor", { id })}>Edit rule</button>
+    {:else}
+      <button onclick={startRename}>Rename</button>
+    {/if}
     {#if confirmingDelete}
       <button class="danger" onclick={() => runAction("playlists.delete", { id })}>
         Confirm delete
@@ -152,9 +186,13 @@
       <button onclick={async () => runAction("tags.edit", { trackIds: await selectedTrackIds() })}>
         {actionLabel("tags.edit")}
       </button>
-      <button onclick={() => move(-1)}>Move up</button>
-      <button onclick={() => move(1)}>Move down</button>
-      <button onclick={removeSelected}>{actionLabel("playlists.removeItems")}</button>
+      {#if !smart}
+        <button onclick={() => move(-1)}>Move up</button>
+        <button onclick={() => move(1)}>Move down</button>
+        <button onclick={removeSelected}>{actionLabel("playlists.removeItems")}</button>
+      {/if}
+    {:else if smart}
+      <span class="meta">This list follows its rule, so it changes with your library.</span>
     {:else}
       <span class="meta">Select tracks to reorder or remove them.</span>
     {/if}
@@ -170,7 +208,11 @@
     onactivate={(_, index) => runAction("player.playPlaylist", { id, startIndex: index })}
   >
     {#snippet empty()}
-      <p>This playlist is empty. Select tracks in the library to add them.</p>
+      {#if smart}
+        <p>No tracks match this rule right now.</p>
+      {:else}
+        <p>This playlist is empty. Select tracks in the library to add them.</p>
+      {/if}
     {/snippet}
   </TrackTable>
 {:else}

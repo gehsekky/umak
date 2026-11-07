@@ -1530,6 +1530,75 @@ mod tests {
     }
 
     #[test]
+    fn ratings_plays_and_smart_playlists_survive_an_export_and_import() {
+        use crate::smart::{SmartRule, SmartSort};
+        let (source, root) = source();
+        let rule = SmartRule {
+            match_all: true,
+            conditions: Vec::new(),
+            sort: SmartSort::Plays,
+            descending: true,
+            limit: Some(1),
+        };
+        let (a, b) = (source.id_of("A"), source.id_of("B"));
+        source
+            .db
+            .write(|conn| {
+                crate::user_data::set_rating(conn, std::slice::from_ref(&a), Some(7))?;
+                crate::user_data::record_play(conn, &b, 100)?;
+                crate::user_data::record_play(conn, &b, 200)?;
+                crate::playlists::create_smart(conn, "Most played", &rule, 1)?;
+                Ok::<_, ApiError>(())
+            })
+            .unwrap();
+        let file = source.export();
+
+        let target = install();
+        let music = target.folder("copy");
+        target.mp3("copy/x/a.mp3", 1, "A");
+        target.mp3("copy/x/b.mp3", 2, "B");
+        target.import(&file, &[(&root, Some(&music))]);
+
+        assert_eq!(
+            target.query(|conn| conn.query_row(
+                "SELECT d.rating FROM track_user_data d JOIN tracks t ON t.id = d.track_id
+                 WHERE t.public_id = ?1",
+                [&a],
+                |row| row.get::<_, Option<i64>>(0)
+            )),
+            Some(7)
+        );
+        assert_eq!(
+            target.query(|conn| conn.query_row(
+                "SELECT d.play_count, d.last_played_at FROM track_user_data d
+                 JOIN tracks t ON t.id = d.track_id WHERE t.public_id = ?1",
+                [&b],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            )),
+            (2, 200)
+        );
+        assert_eq!(
+            target.count("SELECT count(*) FROM play_history"),
+            source.count("SELECT count(*) FROM play_history")
+        );
+
+        let saved = target
+            .db
+            .read(crate::playlists::list)
+            .unwrap()
+            .into_iter()
+            .find(|playlist| playlist.smart)
+            .unwrap();
+        assert_eq!(saved.name, "Most played");
+        assert_eq!(saved.rule.as_ref(), Some(&rule));
+        let page = target
+            .db
+            .read(|conn| crate::playlists::items(conn, &saved.id, 0, 10))
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+    }
+
+    #[test]
     fn importing_the_same_file_twice_changes_nothing_more() {
         let (source, root) = source();
         let list = source.playlist("Mix", &["A", "B"]);

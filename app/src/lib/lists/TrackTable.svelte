@@ -220,23 +220,24 @@
     }
   }
 
-  const headers: { name: string; sort?: TrackSort; align?: "end" }[] = [
+  /** The optional columns go first when the list is narrow, so titles stay readable. */
+  const headers: { name: string; sort?: TrackSort; align?: "end"; optional?: boolean }[] = [
     { name: "#", align: "end" },
     { name: "Title", sort: "title" },
     { name: "Artist", sort: "artist" },
     { name: "Album", sort: "album" },
-    { name: "Year", align: "end" },
+    { name: "Year", align: "end", optional: true },
     { name: "Time", align: "end" },
-    { name: "Format" },
+    { name: "Format", optional: true },
     { name: "Rating" },
-    { name: "Plays", align: "end" },
+    { name: "Plays", align: "end", optional: true },
   ];
 </script>
 
 <div class="table" class:compact>
   {#if !compact}<div class="header row" role="row">
     {#each headers as header}
-      <div class:end={header.align === "end"} role="columnheader">
+      <div class:end={header.align === "end"} class:optional={header.optional} role="columnheader">
         {#if header.sort && onsort}
           <button class="sort" onclick={() => onsort?.(header.sort as TrackSort)}>
             {header.name}
@@ -303,12 +304,12 @@
           {#if !compact}
             <div role="gridcell" title={info.artist}>{info.artist}</div>
             <div role="gridcell" title={info.album}>{info.album}</div>
-            <div class="end muted" role="gridcell">{info.year ?? ""}</div>
+            <div class="end muted optional" role="gridcell">{info.year ?? ""}</div>
           {/if}
           <div class="end muted time" role="gridcell">{formatDuration(info.durationMs)}</div>
           {#if !compact}
             {@const plays = formatPlays(info)}
-            <div class="muted" role="gridcell">{formatQuality(info)}</div>
+            <div class="muted optional" role="gridcell">{formatQuality(info)}</div>
             <div role="gridcell">
               <StarRating
                 rating={info.rating}
@@ -316,7 +317,9 @@
                 onrate={(rating) => runAction("tracks.rate", { trackIds: [info.id], rating })}
               />
             </div>
-            <div class="end muted plays" role="gridcell" title={plays.title}>{plays.count}</div>
+            <div class="end muted plays optional" role="gridcell" title={plays.title}>
+              {plays.count}
+            </div>
           {/if}
         </div>
       {:else}
@@ -333,6 +336,7 @@
     flex: 1;
     min-height: 0;
     position: relative;
+    container-type: inline-size;
   }
 
   .row {
@@ -341,6 +345,16 @@
     gap: var(--space-sm);
     align-items: center;
     padding: 0 var(--space-md) 0 var(--space-sm);
+  }
+
+  @container (max-width: 800px) {
+    .row {
+      grid-template-columns: 3em 4fr 3fr 3fr 4em 5.5em;
+    }
+
+    .optional {
+      display: none;
+    }
   }
 
   .compact .row {

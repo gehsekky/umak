@@ -2,6 +2,7 @@
 // and later the command palette and context menus all run the same thing.
 
 import type { ReplayGainMode } from "../api/generated/ReplayGainMode";
+import type { SmartRule } from "../api/generated/SmartRule";
 
 /** Actions and the arguments they take. */
 export type ActionMap = {
@@ -13,6 +14,7 @@ export type ActionMap = {
   "nav.tagEditor": void;
   "nav.tagReview": { id: string };
   "nav.duplicates": void;
+  "nav.smartEditor": { id: string | null };
   "library.addFolder": void;
   "library.rescan": void;
   "library.cancelScan": void;
@@ -30,6 +32,8 @@ export type ActionMap = {
   "tags.closeDraft": void;
   "tags.leaveReview": void;
   "tags.undo": { id: string };
+  "playlists.saveSmart": { id: string | null; name: string; rule: SmartRule };
+  "playlists.leaveSmart": { id: string | null };
   "playlists.startCreate": void;
   "playlists.create": { name: string };
   "playlists.rename": { id: string; name: string };

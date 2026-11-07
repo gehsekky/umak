@@ -195,7 +195,7 @@ The scanner assigns each track to an album using the first rule that applies. Gr
 - Duplicate finder by fingerprint and by tag match. It only reports: the app never deletes a music file, so copies are removed in a file manager and a rescan follows. A tag match needs the same title, artist, album and track number, because the same song played twice in a concert otherwise looks like a copy: in the real library that was 194 of 217 groups.
 - Rename and move files from tag patterns.
 - Identify untagged files with AcoustID fingerprinting and MusicBrainz lookups.
-- Smart playlists defined by rules, such as FLAC, rated 4 or higher, not played in six months.
+- Smart playlists defined by rules, such as FLAC, rated 4 or higher, not played in six months. A rule is stored and worked out each time, so the list follows the library. Playing one copies the list as it stands into the player playlist.
 
 ## Database design
 
@@ -213,7 +213,7 @@ SQLite in WAL mode, accessed through rusqlite, with FTS5 for search. At 30,000 t
 | track_artists, album_artists, track_genres | Join tables | Multi-value tags, with role (artist, composer) on track_artists |
 | raw_tags | Unmapped tags | Preserves custom and unknown fields per track |
 | playlists, playlist_items | Saved playlists and the player playlist | Per-user, ordered items; smart playlists store a rule; a reserved row per user holds the player playlist and position |
-| play_history | Listens | User id and timestamp per play, feeds scrobbling and smart rules |
+| play_history | Listens | User id and timestamp per play, feeds scrobbling and smart rules. A play is half a track or four minutes of actual listening, the rule scrobbling services use |
 | tracks_fts | FTS5 index | Title, artist, album, genre for instant search |
 | jobs | Conversion and scan jobs | Status, progress, errors |
 | settings | App settings | Key and JSON value, with typed access in Rust |

@@ -18,7 +18,8 @@ export type View =
   | { kind: "tagEditor" }
   | { kind: "tagReview"; id: string }
   | { kind: "tagEdits" }
-  | { kind: "duplicates" };
+  | { kind: "duplicates" }
+  | { kind: "smartEditor"; id: string | null };
 
 /** A background job reading the library: a scan, or the scan inside an import. */
 export type ScanState = { id: string; kind: string; done: number; total: number };
@@ -63,6 +64,9 @@ class AppState {
   writingEdit: string | null = null;
   /** Where an edit started, to return to when it is done. */
   editOrigin = $state<View>({ kind: "library" });
+
+  /** The playlists tracks can be added to. A smart playlist's rule decides what it holds. */
+  readonly manualPlaylists = $derived(this.playlists.filter((playlist) => !playlist.smart));
 
   readonly trackCount = $derived(this.roots.reduce((sum, root) => sum + root.trackCount, 0));
 

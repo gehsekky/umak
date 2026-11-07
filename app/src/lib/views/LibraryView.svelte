@@ -151,12 +151,12 @@
       bind:value={addTarget}
       onchange={addSelection}
       aria-label={actionLabel("playlists.addTracks")}
-      disabled={app.playlists.length === 0}
+      disabled={app.manualPlaylists.length === 0}
     >
       <option value="">
-        {app.playlists.length === 0 ? "Create a playlist first" : actionLabel("playlists.addTracks")}
+        {app.manualPlaylists.length === 0 ? "Create a playlist first" : actionLabel("playlists.addTracks")}
       </option>
-      {#each app.playlists as playlist (playlist.id)}
+      {#each app.manualPlaylists as playlist (playlist.id)}
         <option value={playlist.id}>{playlist.name}</option>
       {/each}
     </select>

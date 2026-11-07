@@ -33,16 +33,19 @@
 <div class="bar">
   <div class="now" data-testid="now-playing">
     {#if track}
-      <div class="title" title={track.title}>{track.title}</div>
+      <!-- Beside the title, so a track starting does not make the bar taller. -->
+      <div class="heading">
+        <div class="title" title={track.title}>{track.title}</div>
+        <StarRating
+          focusable
+          rating={track.rating}
+          label="Rating of {track.title}"
+          onrate={(rating) => runAction("tracks.rate", { trackIds: [track.id], rating })}
+        />
+      </div>
       <div class="detail" title="{track.artist} - {track.album}">
         {track.artist}<span class="album">{" - "}{track.album}</span>
       </div>
-      <StarRating
-        focusable
-        rating={track.rating}
-        label="Rating of {track.title}"
-        onrate={(rating) => runAction("tracks.rate", { trackIds: [track.id], rating })}
-      />
     {:else}
       <div class="detail">Nothing playing</div>
     {/if}
@@ -142,6 +145,17 @@
   .now {
     grid-area: now;
     min-width: 0;
+  }
+
+  .heading {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+  }
+
+  .heading :global(.stars) {
+    flex: none;
+    font-size: var(--font-size-small);
   }
 
   .buttons {
