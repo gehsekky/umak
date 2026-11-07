@@ -54,6 +54,13 @@ export function registerAppActions(): void {
     },
   });
   registerAction({
+    id: "tracks.rate",
+    label: "Rate",
+    run: async ({ trackIds, rating }) => {
+      await call("tracks.setRating", { trackIds, rating });
+    },
+  });
+  registerAction({
     id: "nav.duplicates",
     label: "Duplicates",
     run: () => {

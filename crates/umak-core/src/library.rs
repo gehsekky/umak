@@ -13,9 +13,15 @@ use ts_rs::TS;
 pub const MAX_PAGE: u32 = 1000;
 
 /// The columns `TrackRow::from_row` reads, for a query that names `tracks` as `t`.
+///
+/// What belongs to the person comes from one lookup per row, for the default user, whose ID is 1.
 pub const TRACK_COLUMNS: &str = "t.public_id, t.title, t.artist_display, t.album_display,
     t.duration_ms, t.track_no, t.disc_no, t.year, t.codec, t.sample_rate, t.bit_depth,
-    t.missing_since IS NOT NULL";
+    t.missing_since IS NOT NULL,
+    (SELECT d.rating FROM track_user_data d WHERE d.user_id = 1 AND d.track_id = t.id),
+    coalesce((SELECT d.play_count FROM track_user_data d
+              WHERE d.user_id = 1 AND d.track_id = t.id), 0),
+    (SELECT d.last_played_at FROM track_user_data d WHERE d.user_id = 1 AND d.track_id = t.id)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +80,11 @@ pub struct TrackRow {
     pub sample_rate: Option<i64>,
     pub bit_depth: Option<i64>,
     pub missing: bool,
+    /// From 0 to 10, in half-stars.
+    pub rating: Option<i64>,
+    pub play_count: i64,
+    /// Milliseconds since the Unix epoch.
+    pub last_played_at: Option<i64>,
 }
 
 impl TrackRow {
@@ -92,6 +103,9 @@ impl TrackRow {
             sample_rate: row.get(first + 9)?,
             bit_depth: row.get(first + 10)?,
             missing: row.get(first + 11)?,
+            rating: row.get(first + 12)?,
+            play_count: row.get(first + 13)?,
+            last_played_at: row.get(first + 14)?,
         })
     }
 }

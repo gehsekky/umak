@@ -27,6 +27,7 @@ use crate::db::{Database, new_public_id};
 use crate::scan::store::{self, Catalog, FileRecord};
 use crate::scan::tags::FileInfo;
 use crate::scan::{self, ScanOptions, ScanProgress, ScanReport};
+use crate::user_data::MAX_RATING;
 
 const FORMAT: &str = "umak-library-export";
 /// The newest version this app writes. Older versions stay readable: add a conversion
@@ -34,7 +35,6 @@ const FORMAT: &str = "umak-library-export";
 pub const CURRENT_VERSION: u32 = 1;
 const MAX_REPORTED_MISSING: usize = 200;
 const POSITION_GAP: i64 = 1024;
-const MAX_RATING: i64 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -19,6 +19,7 @@ use crate::api::{ApiError, CoreEvent, ErrorCode, EventSink};
 use crate::db::{Database, DbError};
 use crate::library::{TRACK_COLUMNS, TrackRow};
 use crate::playlists::{self, PlayerEdit, PlaylistPage};
+use crate::user_data::{self, PlayTracker};
 
 /// How much playback can be lost if the app ends without warning.
 const SAVE_POSITION_EVERY_MS: u64 = 5000;
@@ -328,6 +329,7 @@ struct Shared {
     loaded: AtomicBool,
     saved_position_ms: Mutex<u64>,
     seen_underruns: Mutex<u64>,
+    plays: Mutex<PlayTracker>,
 }
 
 impl Shared {
@@ -402,6 +404,25 @@ impl Shared {
         });
     }
 
+    /// Counts a play. Failing to must never affect playback.
+    fn record_play(&self, track_id: &str) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as i64);
+        let recorded = self.db.write(|conn| {
+            let tx = conn.transaction()?;
+            user_data::record_play(&tx, track_id, now)?;
+            tx.commit()?;
+            Ok::<_, DbError>(())
+        });
+        if let Err(error) = recorded {
+            eprintln!("failed to record a play: {error}");
+            return;
+        }
+        self.events.emit(&CoreEvent::LibraryChanged);
+        self.refresh_track();
+    }
+
     fn save_position(&self, index: Option<u32>, position_ms: u64) {
         *lock(&self.saved_position_ms) = position_ms;
         let saved = self.db.write(|conn| {
@@ -445,6 +466,7 @@ impl Shared {
                 position_ms,
                 duration_ms,
             } => {
+                lock(&self.plays).on_state(state, track_id.as_deref(), position_ms, duration_ms);
                 let track = track_id.as_deref().and_then(|id| self.track_row(id));
                 let index = index.map(|index| index as u32);
                 let status = {
@@ -474,6 +496,10 @@ impl Shared {
                 self.events.emit(&CoreEvent::PlayerPosition {
                     position_ms: position_ms as i64,
                 });
+                let played = lock(&self.plays).on_position(position_ms);
+                if let Some(track) = played {
+                    self.record_play(&track);
+                }
             }
             PlayerEvent::Health {
                 underruns,
@@ -535,6 +561,7 @@ impl Player {
                 status: Mutex::default(),
                 loaded: AtomicBool::new(false),
                 saved_position_ms: Mutex::new(0),
+                plays: Mutex::new(PlayTracker::default()),
                 seen_underruns: Mutex::new(0),
             }),
             backend: Mutex::new(None),

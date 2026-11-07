@@ -2,6 +2,7 @@
   // The player bar: what is playing, the transport and seek bar, and the volume.
   import { actionLabel, runAction } from "../actions/registry";
   import { formatDuration } from "../lists/format";
+  import StarRating from "../lists/StarRating.svelte";
   import { player } from "../player/state.svelte";
   import { gainToSlider, sliderToGain } from "../player/volume";
   import { app } from "../state/app.svelte";
@@ -36,6 +37,12 @@
       <div class="detail" title="{track.artist} - {track.album}">
         {track.artist}<span class="album">{" - "}{track.album}</span>
       </div>
+      <StarRating
+        focusable
+        rating={track.rating}
+        label="Rating of {track.title}"
+        onrate={(rating) => runAction("tracks.rate", { trackIds: [track.id], rating })}
+      />
     {:else}
       <div class="detail">Nothing playing</div>
     {/if}

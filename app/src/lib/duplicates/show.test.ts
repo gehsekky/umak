@@ -17,6 +17,9 @@ function track(fields: Partial<TrackRow> = {}): TrackRow {
     sampleRate: 44100,
     bitDepth: null,
     missing: false,
+    rating: null,
+    playCount: 0,
+    lastPlayedAt: null,
     ...fields,
   };
 }

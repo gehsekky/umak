@@ -8,8 +8,11 @@
   // The track list used by every view: virtualized rows, sortable headers, and
   // mouse and keyboard selection.
   import type { Snippet } from "svelte";
+  import { runAction } from "../actions/registry";
   import type { TrackRow } from "../api/generated/TrackRow";
   import { formatDuration, formatQuality } from "./format";
+  import { formatPlays, ratingForDigit } from "./rating";
+  import StarRating from "./StarRating.svelte";
   import { player } from "../player/state.svelte";
   import type { PagedList } from "./pagedList.svelte";
   import type { Selection } from "./selection.svelte";
@@ -172,9 +175,24 @@
     if (row) selection.only(target, list.key(row));
   }
 
+  /** Alt with a number rates the selected rows. */
+  async function rateSelection(rating: number | null): Promise<void> {
+    const rows = await list.rowsInRange(0, list.total);
+    const trackIds = rows
+      .filter((row) => selection.has(list.key(row)))
+      .map((row) => track(row).id);
+    if (trackIds.length > 0) await runAction("tracks.rate", { trackIds: [...new Set(trackIds)], rating });
+  }
+
   function keydown(event: KeyboardEvent): void {
     if (onkeys?.(event)) {
       event.preventDefault();
+      return;
+    }
+    const rating = event.altKey ? ratingForDigit(event.key) : undefined;
+    if (rating !== undefined) {
+      event.preventDefault();
+      void rateSelection(rating);
       return;
     }
     const cursor = selection.cursor ?? -1;
@@ -210,6 +228,8 @@
     { name: "Year", align: "end" },
     { name: "Time", align: "end" },
     { name: "Format" },
+    { name: "Rating" },
+    { name: "Plays", align: "end" },
   ];
 </script>
 
@@ -286,7 +306,18 @@
             <div class="end muted" role="gridcell">{info.year ?? ""}</div>
           {/if}
           <div class="end muted time" role="gridcell">{formatDuration(info.durationMs)}</div>
-          {#if !compact}<div class="muted" role="gridcell">{formatQuality(info)}</div>{/if}
+          {#if !compact}
+            {@const plays = formatPlays(info)}
+            <div class="muted" role="gridcell">{formatQuality(info)}</div>
+            <div role="gridcell">
+              <StarRating
+                rating={info.rating}
+                label="Rating of {info.title}"
+                onrate={(rating) => runAction("tracks.rate", { trackIds: [info.id], rating })}
+              />
+            </div>
+            <div class="end muted plays" role="gridcell" title={plays.title}>{plays.count}</div>
+          {/if}
         </div>
       {:else}
         <div class="row body placeholder" aria-hidden="true"></div>
@@ -306,7 +337,7 @@
 
   .row {
     display: grid;
-    grid-template-columns: 4em 4fr 3fr 3fr 4em 5em 7em;
+    grid-template-columns: 4em 4fr 3fr 3fr 4em 5em 7em 5.5em 3em;
     gap: var(--space-sm);
     align-items: center;
     padding: 0 var(--space-md) 0 var(--space-sm);
@@ -371,7 +402,8 @@
     font-size: var(--font-size-small);
   }
 
-  .time {
+  .time,
+  .plays {
     font-variant-numeric: tabular-nums;
   }
 

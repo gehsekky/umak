@@ -28,6 +28,7 @@ use crate::playlists::{self, Playlist, PlaylistPage};
 use crate::scan::{self, ScanError, ScanOptions};
 use crate::tagedit::{self, TagEdit, TagEditItemPage, TagEditPage, TrackEdits, TrackTagValuesList};
 use crate::transfer::{self, ExportSummary, ImportPreview, RootChoice};
+use crate::user_data;
 use crate::{AppInfo, app_info};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -257,6 +258,7 @@ commands![
     DiscardTagEdit,
     UndoTagEdit,
     GetDuplicates,
+    SetTrackRating,
 ];
 
 #[derive(Debug, Deserialize, TS)]
@@ -967,6 +969,38 @@ fn start_tag_preview(
         })
     })?;
     Ok(TagEditJob { edit_id, job_id })
+}
+
+/// Sets or clears the rating of these tracks: 0 to 10, in half-stars.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetTrackRating {
+    pub track_ids: Vec<String>,
+    pub rating: Option<i64>,
+}
+
+impl Command for SetTrackRating {
+    const NAME: &'static str = "tracks.setRating";
+    type Output = RatingResult;
+
+    fn run(self, core: &Core) -> Result<RatingResult, ApiError> {
+        core.db.write(|conn| {
+            let tx = conn.transaction()?;
+            user_data::set_rating(&tx, &self.track_ids, self.rating)?;
+            tx.commit()?;
+            Ok::<_, ApiError>(())
+        })?;
+        core.events.emit(&CoreEvent::LibraryChanged);
+        core.player.track_refresher()();
+        Ok(RatingResult {
+            updated: self.track_ids.len() as u32,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct RatingResult {
+    pub updated: u32,
 }
 
 /// A page of files that look like copies of each other. A limit of zero gives only the totals.

@@ -21,6 +21,7 @@ export type ActionMap = {
   "library.export": void;
   "library.chooseImport": void;
   "library.startImport": { path: string; roots: { id: string; path: string | null }[] };
+  "tracks.rate": { trackIds: string[]; rating: number | null };
   "tags.edit": { trackIds: string[] };
   "tags.preview": void;
   "tags.write": { id: string };
