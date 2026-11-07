@@ -29,7 +29,7 @@ crates/umak-core/     library, database, scanner, tag model
 crates/umak-audio/    engine, playlist, EQ, plugin host
 crates/umak-play/     player test tool around the engine
 crates/umak-scan/     headless scan and benchmark tool
-crates/umak-convert/  FFmpeg job runner (later phase)
+crates/umak-convert/  FFmpeg runner and conversion tool
 crates/umak-server/   OpenSubsonic (later phase)
 app/                  Tauri shell (umak-app) and Svelte UI
 docs/                 PLAN.md and architecture notes
@@ -44,6 +44,7 @@ Run from the repository root:
 - `cargo run --release -p umak-scan -- bench <database>`: time queries against the 10 ms target. `rawio <folder>...` times listing and reading with no parsing, and `generate <folder> <count>` writes synthetic tracks. Results so far are in `docs/benchmarks-phase1.md`.
 - `cargo run -p umak-play -- <file>...`: play files. With no files it takes JSON commands on stdin. `--volume N` sets the gain, `--null-output` makes no sound, and `--check <file>...` decodes files without playing them.
 - `UMAK_JOIN_FILES="a;b;c" cargo test --release -p umak-audio --test engine report_on_real_joins -- --ignored --nocapture`: measure the joins between real files.
+- `cargo run -p umak-convert -- info` shows the FFmpeg found and its encoders; `cargo run -p umak-convert -- <input> <output> <encoding>` converts one file, with encodings such as `flac`, `mp3-v0` or `aac-256`. The converter looks for FFmpeg in `UMAK_FFMPEG`, beside the executable, then on the path, and its tests need FFmpeg installed.
 - `cargo test -p umak-core --features engine`: include the tests of the engine inside the core. `cargo test --workspace` already includes them, because the app turns the feature on.
 - `UMAK_TAG_CORPUS=<folder> cargo test --release -p umak-core --test tag_corpus -- --ignored --nocapture`: write tags to real files and undo them, to find what fixtures cannot. It changes the files, so it needs a folder of copies holding a `.umak-tag-corpus` file.
 - `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio`.

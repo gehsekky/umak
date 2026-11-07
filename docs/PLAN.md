@@ -615,6 +615,8 @@ Exit criteria:
 - Cancel and failures leave no partial output, and failed files can be retried.
 - Playback has no underruns while a batch runs, checked with the health log.
 
+Found while building step 1, November 2026: FFmpeg's AAC output marks its encoder delay with an MP4 edit list, not the iTunes tag the engine reads, so converted AAC plays with about 40 ms of extra silence until one of them is handled. MP3 output carries a LAME tag and decodes to the exact source length. The engine cannot play Opus, so Opus output is for other players and devices.
+
 Development uses a locally installed FFmpeg. Shipping needs an LGPL build, chosen and reviewed with the installers in phase 5.
 
 Phase 2 closed in November 2026 at the owner's go-ahead. The listening check in its brief was not separately reported.

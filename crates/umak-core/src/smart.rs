@@ -293,7 +293,7 @@ impl SmartRule {
     }
 
     /// The tracks and joins to select from, and the values that go with them.
-    fn from_sql(&self, now: i64) -> (String, Vec<Value>) {
+    fn source_sql(&self, now: i64) -> (String, Vec<Value>) {
         let mut values = Vec::new();
         let tests: Vec<String> = self
             .conditions
@@ -355,7 +355,7 @@ pub struct SmartTotals {
 
 /// Works out the totals. With no limit there is no need to sort anything first.
 pub fn totals(conn: &Connection, rule: &SmartRule, now: i64) -> rusqlite::Result<SmartTotals> {
-    let (from, values) = rule.from_sql(now);
+    let (from, values) = rule.source_sql(now);
     let sql = match rule.limit {
         None => format!("SELECT count(*), coalesce(sum(t.duration_ms), 0) {from}"),
         Some(limit) => format!(
@@ -384,7 +384,7 @@ pub fn page(
 ) -> rusqlite::Result<Vec<(i64, TrackRow)>> {
     let end = u64::from(rule.limit.unwrap_or(u32::MAX));
     let wanted = u64::from(limit.min(MAX_PAGE)).min(end.saturating_sub(u64::from(offset)));
-    let (from, mut values) = rule.from_sql(now);
+    let (from, mut values) = rule.source_sql(now);
     values.push(Value::Integer(wanted as i64));
     values.push(Value::Integer(i64::from(offset)));
     let sql = format!(
@@ -407,7 +407,7 @@ pub fn insert_into(
     now: i64,
     gap: i64,
 ) -> rusqlite::Result<()> {
-    let (from, values) = rule.from_sql(now);
+    let (from, values) = rule.source_sql(now);
     let limit = rule
         .limit
         .map_or(String::new(), |limit| format!("LIMIT {limit}"));

@@ -4408,6 +4408,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "umak-convert"
+version = "0.1.0"
+dependencies = [
+ "lofty",
+ "tempfile",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "umak-core"
 version = "0.1.0"
 dependencies = [
