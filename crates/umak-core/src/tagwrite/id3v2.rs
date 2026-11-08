@@ -419,6 +419,54 @@ pub fn edit_file(file: &mut File, edits: &[FieldEdit]) -> Result<(), TagWriteErr
     write_tag(file, tag)
 }
 
+/// The description that names a TXXX or COMM frame, which can hold several of them.
+fn frame_description(frame: &RawFrame) -> Option<String> {
+    match &frame.id {
+        b"TXXX" => user_text_name(frame),
+        // A comment's language sits between its encoding and its description.
+        b"COMM" | b"USLT" => {
+            let (encoding, rest) = frame.body.split_first()?;
+            let mut body = vec![*encoding];
+            body.extend_from_slice(rest.get(3..)?);
+            Some(decode_text(&body)?.split('\0').next()?.to_owned())
+        }
+        _ => None,
+    }
+}
+
+/// Copies the tag at the start of `source` onto `target`, which has none, frame for frame
+/// and in the same version, leaving out the frames `keep` turns down. `keep` is given each
+/// frame's ID and, for frames that can repeat by name, its description. Returns false when
+/// the source has no tag to copy.
+pub fn copy_tag(
+    source: &mut File,
+    target: &mut File,
+    keep: impl Fn(&str, Option<&str>) -> bool,
+) -> Result<bool, TagWriteError> {
+    let from = read_tag(source)?;
+    if !from.exists {
+        return Ok(false);
+    }
+    let mut to = read_tag(target)?;
+    if to.exists {
+        return Err(TagWriteError::Invalid(
+            "the converted file already has an ID3v2 tag".to_owned(),
+        ));
+    }
+    to.version = from.version;
+    to.flags = 0;
+    to.frames = from
+        .frames
+        .into_iter()
+        .filter(|frame| {
+            let id = String::from_utf8_lossy(&frame.id);
+            keep(&id, frame_description(frame).as_deref())
+        })
+        .collect();
+    write_tag(target, to)?;
+    Ok(true)
+}
+
 fn write_tag(file: &mut File, tag: ParsedTag) -> Result<(), TagWriteError> {
     let ParsedTag {
         exists: has_tag,

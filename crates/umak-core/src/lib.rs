@@ -15,6 +15,7 @@ pub mod playlists;
 pub mod scan;
 pub mod smart;
 pub mod stats;
+pub mod tagcopy;
 pub mod tagedit;
 pub mod tagwrite;
 pub mod transfer;

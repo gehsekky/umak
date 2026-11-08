@@ -37,6 +37,7 @@ use crate::scan::fingerprint::audio_hash;
 use crate::scan::normalize::{artist_key, identity_key};
 use crate::scan::tags::{FileInfo, TrackTags, full_error, read_file};
 
+pub(crate) use id3v2::copy_tag as copy_id3v2;
 pub use snapshot::TagSnapshot;
 
 /// How far past a tag to look for the audio, as the scanner does.
@@ -111,7 +112,7 @@ fn stamp(path: &Path) -> io::Result<Stamp> {
     })
 }
 
-fn parse_options(read_cover_art: bool) -> ParseOptions {
+pub(crate) fn parse_options(read_cover_art: bool) -> ParseOptions {
     ParseOptions::new()
         .read_cover_art(read_cover_art)
         .max_junk_bytes(MAX_JUNK_BYTES)
@@ -120,7 +121,7 @@ fn parse_options(read_cover_art: bool) -> ParseOptions {
         .implicit_conversions(false)
 }
 
-fn format_error(error: &dyn std::error::Error) -> TagWriteError {
+pub(crate) fn format_error(error: &dyn std::error::Error) -> TagWriteError {
     TagWriteError::Format(full_error(error))
 }
 
@@ -379,7 +380,7 @@ fn apply_ilst(tag: &mut Ilst, edit: &FieldEdit) {
 /// them back as four, so they are handed over as the bytes they were.
 const ONE_BYTE_ATOMS: [[u8; 4]; 6] = [*b"rtng", *b"stik", *b"akID", *b"pcst", *b"hdvd", *b"shwm"];
 
-fn keep_one_byte_atoms(tag: &mut Ilst) {
+pub(crate) fn keep_one_byte_atoms(tag: &mut Ilst) {
     for code in ONE_BYTE_ATOMS {
         let ident = AtomIdent::Fourcc(code);
         let number = tag.get(&ident).and_then(|atom| {

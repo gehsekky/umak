@@ -8,6 +8,8 @@ pub mod protocol;
 #[cfg(feature = "engine")]
 pub mod decoder;
 #[cfg(feature = "engine")]
+mod edit_list;
+#[cfg(feature = "engine")]
 pub mod effects;
 #[cfg(feature = "engine")]
 pub mod engine;

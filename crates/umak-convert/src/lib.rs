@@ -45,6 +45,8 @@ pub enum ConvertError {
     Canceled,
     #[error("FFmpeg failed ({status}): {message}")]
     Failed { status: String, message: String },
+    #[error("{0}")]
+    Finish(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -242,15 +244,16 @@ impl Ffmpeg {
         self.encoders.contains(name)
     }
 
-    /// Converts one file, calling `progress` with how much of the audio is done. Output is
-    /// written beside its final name and moved there only when FFmpeg succeeds, so a cancel
-    /// or failure leaves nothing behind. Only the first audio stream is kept, without tags,
-    /// chapters or art.
+    /// Converts one file, calling `progress` with how much of the audio is done. Only the
+    /// first audio stream is kept, without tags, chapters or art. Output is written beside
+    /// its final name, handed to `finish` there to add what FFmpeg left out, and moved into
+    /// place only when both succeed, so a cancel or failure leaves nothing behind.
     pub fn convert(
         &self,
         conversion: &Conversion,
         cancel: &AtomicBool,
         mut progress: impl FnMut(Duration),
+        finish: impl FnOnce(&Path) -> Result<(), String>,
     ) -> Result<(), ConvertError> {
         let encoding = conversion.encoding;
         if !self.has_encoder(encoding.encoder()) {
@@ -329,6 +332,7 @@ impl Ffmpeg {
                 message,
             });
         }
+        finish(partial.path()).map_err(ConvertError::Finish)?;
         // Checked again, since something else may have written there meanwhile, and a move
         // would replace it.
         if exists(output) {
@@ -619,7 +623,7 @@ mod tests {
             sample_rate: None,
             bits: None,
         };
-        let result = ffmpeg.convert(&conversion, &AtomicBool::new(false), |_| {});
+        let result = ffmpeg.convert(&conversion, &AtomicBool::new(false), |_| {}, |_| Ok(()));
         assert!(matches!(
             result,
             Err(ConvertError::MissingEncoder("libopus"))

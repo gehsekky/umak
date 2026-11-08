@@ -68,9 +68,12 @@ fn main() -> ExitCode {
             };
             let started = std::time::Instant::now();
             let mut last = None;
-            let result = ffmpeg.convert(&conversion, &AtomicBool::new(false), |done| {
-                last = Some(done);
-            });
+            let result = ffmpeg.convert(
+                &conversion,
+                &AtomicBool::new(false),
+                |done| last = Some(done),
+                |_| Ok(()),
+            );
             match result {
                 Ok(()) => {
                     let audio = last.unwrap_or_default().as_secs_f64();

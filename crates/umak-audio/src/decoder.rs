@@ -3,8 +3,9 @@
 //!
 //! Encoders add silence to the start and end of a track, which must go for tracks to
 //! join without a gap. Symphonia removes it from MP3 using the LAME tag. For AAC in MP4
-//! it does not, so this reads the iTunes tag that records it. Files with neither tag
-//! play with their silence, since nothing says how much there is.
+//! it does not, so this reads the iTunes tag that records it, or failing that the edit
+//! list, where FFmpeg records it. Files with neither play with their silence, since
+//! nothing says how much there is.
 
 use std::ops::Range;
 
@@ -17,6 +18,7 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::Time;
 
+use crate::edit_list;
 use crate::source::AudioSource;
 
 const NANOS_PER_MS: i128 = 1_000_000;
@@ -33,20 +35,22 @@ fn parse_itunes_gapless(value: &str) -> Option<(u64, u64)> {
     (length > 0).then_some((delay, length))
 }
 
-/// Which decoded frames of a packet lie between `from` and `to`, given in packet time.
+/// Which decoded frames of a packet lie between `from` and `to`, given in packet time. A
+/// unit of time is `per_unit.0 / per_unit.1` frames. The packet's own stated length is not
+/// used, since a container may shorten the last packet's to where its padding starts while
+/// the decoder still gives the whole packet.
 fn kept_frames(
     frames: usize,
     start: i64,
-    length: i64,
+    per_unit: (u64, u64),
     from: Option<i64>,
     to: Option<i64>,
 ) -> Range<usize> {
     let at = |time: i64| -> usize {
-        if length <= 0 {
-            return 0;
-        }
-        let offset = (time - start).clamp(0, length);
-        (frames as i64 * offset / length) as usize
+        let offset = (time - start).max(0) as u128;
+        let (numer, denom) = per_unit;
+        let frame = offset * u128::from(numer) / u128::from(denom.max(1));
+        frame.min(frames as u128) as usize
     };
     let first = from.map_or(0, at);
     let last = to.map_or(frames, at);
@@ -67,6 +71,8 @@ pub struct Decoder {
     end_at: Option<i64>,
     /// Encoder delay in frames that the container's timestamps include.
     delay_frames: u64,
+    /// The time base of packet timestamps, as a numerator and denominator in seconds.
+    time_base: Option<(u32, u32)>,
     decode_errors: u64,
     scratch: Vec<f32>,
 }
@@ -118,15 +124,22 @@ impl Decoder {
             });
 
         let gapless = if is_aac && sample_rate > 0 {
-            format.metadata().skip_to_latest().and_then(|revision| {
-                let tag = revision.media.tags.iter().find(|tag| {
-                    tag.raw
-                        .key
-                        .to_ascii_lowercase()
-                        .ends_with(ITUNES_GAPLESS_TAG)
-                })?;
-                parse_itunes_gapless(&tag.raw.value.to_string())
-            })
+            format
+                .metadata()
+                .skip_to_latest()
+                .and_then(|revision| {
+                    let tag = revision.media.tags.iter().find(|tag| {
+                        tag.raw
+                            .key
+                            .to_ascii_lowercase()
+                            .ends_with(ITUNES_GAPLESS_TAG)
+                    })?;
+                    parse_itunes_gapless(&tag.raw.value.to_string())
+                })
+                .or_else(|| {
+                    let mut media = source.open().ok()?;
+                    edit_list::read_gapless(&mut media, sample_rate)
+                })
         } else {
             None
         };
@@ -157,6 +170,7 @@ impl Decoder {
             skip_until,
             end_at,
             delay_frames,
+            time_base: time_base.map(|base| (base.numer.get(), base.denom.get())),
             decode_errors: 0,
             scratch: Vec::new(),
         })
@@ -215,7 +229,15 @@ impl Decoder {
             if self.skip_until.is_some_and(|from| start + length <= from) {
                 continue;
             }
-            let kept = kept_frames(frames, start, length, self.skip_until, self.end_at);
+            // Without a time base, timestamps count frames.
+            let per_unit = match self.time_base {
+                Some((numer, denom)) => (
+                    u64::from(self.sample_rate) * u64::from(numer),
+                    u64::from(denom),
+                ),
+                None => (1, 1),
+            };
+            let kept = kept_frames(frames, start, per_unit, self.skip_until, self.end_at);
             self.skip_until = None;
             let has_audio = !kept.is_empty();
             output.extend_from_slice(
@@ -277,14 +299,20 @@ mod tests {
     #[test]
     fn only_frames_inside_the_track_are_kept() {
         // The first packet holds the end of the delay.
-        assert_eq!(kept_frames(1024, 2048, 1024, Some(2112), None), 64..1024);
+        let frames = (1, 1);
+        assert_eq!(kept_frames(1024, 2048, frames, Some(2112), None), 64..1024);
         // A packet inside the track keeps everything.
-        assert_eq!(kept_frames(1024, 4096, 1024, None, Some(9000)), 0..1024);
+        assert_eq!(kept_frames(1024, 4096, frames, None, Some(9000)), 0..1024);
         // The last packet holds the start of the padding.
-        assert_eq!(kept_frames(1024, 8192, 1024, None, Some(9000)), 0..808);
+        assert_eq!(kept_frames(1024, 8192, frames, None, Some(9000)), 0..808);
         // A very short track can start and end in one packet.
-        assert_eq!(kept_frames(1024, 0, 1024, Some(100), Some(200)), 100..200);
+        assert_eq!(kept_frames(1024, 0, frames, Some(100), Some(200)), 100..200);
         // Timestamps need not count in frames.
-        assert_eq!(kept_frames(1024, 0, 2048, Some(1024), None), 512..1024);
+        assert_eq!(kept_frames(1024, 0, (1, 2), Some(1024), None), 512..1024);
+        // A last packet whose stated length stops where the padding starts.
+        assert_eq!(
+            kept_frames(1024, 147_456, frames, None, Some(148_023)),
+            0..567
+        );
     }
 }

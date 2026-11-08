@@ -119,6 +119,7 @@ fn converts_to_every_encoding() {
                 &conversion(&input, output.clone(), encoding),
                 &AtomicBool::new(false),
                 |done| reports.push(done),
+                |_| Ok(()),
             )
             .unwrap_or_else(|error| panic!("{encoding:?}: {error}"));
 
@@ -172,6 +173,7 @@ fn picks_a_rate_the_encoder_takes() {
                 &conversion(&input, output.clone(), encoding),
                 &AtomicBool::new(false),
                 |_| {},
+                |_| Ok(()),
             )
             .unwrap_or_else(|error| panic!("{encoding:?}: {error}"));
         let rate = Probe::open(&output)
@@ -228,7 +230,7 @@ fn reduces_rate_and_depth_when_asked() {
             ..conversion(&input, output.clone(), encoding)
         };
         ffmpeg
-            .convert(&conversion, &AtomicBool::new(false), |_| {})
+            .convert(&conversion, &AtomicBool::new(false), |_| {}, |_| Ok(()))
             .unwrap_or_else(|error| panic!("{index}: {error}"));
         let tagged = Probe::open(&output).unwrap().read().unwrap();
         let properties = tagged.properties();
@@ -262,6 +264,7 @@ fn cancel_ends_ffmpeg_and_leaves_nothing() {
             reports += 1;
             cancel.store(true, Ordering::Relaxed);
         },
+        |_| Ok(()),
     );
     assert!(matches!(result, Err(ConvertError::Canceled)), "{result:?}");
     assert_eq!(reports, 1, "it stopped at the first report");
@@ -283,12 +286,35 @@ fn a_failure_reports_ffmpeg_and_leaves_nothing() {
         &conversion(&input, dir.path().join("out.flac"), Encoding::Flac),
         &AtomicBool::new(false),
         |_| {},
+        |_| Ok(()),
     );
     match result {
         Err(ConvertError::Failed { message, .. }) => assert!(!message.is_empty()),
         other => panic!("{other:?}"),
     }
     assert_eq!(names_in(dir.path()), ["not audio.wav"]);
+}
+
+#[test]
+fn a_failed_finish_leaves_nothing() {
+    let ffmpeg = ffmpeg();
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("tone.wav");
+    write_wav(&input, 44_100, 2, 0.5);
+    let mut handed = None;
+    let result = ffmpeg.convert(
+        &conversion(&input, dir.path().join("out.flac"), Encoding::Flac),
+        &AtomicBool::new(false),
+        |_| {},
+        |partial| {
+            handed = Some(partial.to_owned());
+            assert!(partial.is_file(), "the output is there to finish");
+            Err("no tags for you".to_owned())
+        },
+    );
+    assert!(matches!(&result, Err(ConvertError::Finish(message)) if message == "no tags for you"));
+    assert!(handed.is_some_and(|path| path.ends_with(".out.flac.umak-part")));
+    assert_eq!(names_in(dir.path()), ["tone.wav"]);
 }
 
 #[test]
@@ -304,6 +330,7 @@ fn never_writes_over_a_file() {
             &conversion(&input, output.clone(), Encoding::Flac),
             &AtomicBool::new(false),
             |_| {},
+            |_| Ok(()),
         );
         assert!(
             matches!(result, Err(ConvertError::OutputExists(_))),
@@ -364,6 +391,7 @@ fn keeps_only_the_first_audio_stream_without_art() {
             &conversion(&source, output.clone(), Encoding::Flac),
             &AtomicBool::new(false),
             |_| {},
+            |_| Ok(()),
         )
         .unwrap();
     let plain = Probe::open(&output).unwrap().read().unwrap();
