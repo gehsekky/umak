@@ -1,24 +1,28 @@
 //! Long operations run as background jobs: recorded in the database, cancelable, and
-//! reporting progress as events, so any client can show them. One job of each kind
-//! runs at a time.
+//! reporting progress as events, so any client can show them. Jobs that change the library
+//! run one at a time; a conversion only reads it, so it runs beside them, one at a time too.
 
 use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use ts_rs::TS;
 
 use crate::api::{ApiError, CoreEvent, ErrorCode, EventSink};
+use crate::convert_job::ConvertReport;
 use crate::db::{Database, DbError, new_public_id};
 use crate::scan::ScanReport;
 use crate::transfer::ImportReport;
 
 const LISTED_JOBS: i64 = 50;
+/// How often a job waiting for the library looks again.
+const LIBRARY_WAIT: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +31,14 @@ pub enum JobKind {
     Import,
     TagPreview,
     TagWrite,
+    Convert,
+}
+
+/// Jobs in the same lane run one at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lane {
+    Library,
+    Convert,
 }
 
 impl JobKind {
@@ -36,6 +48,14 @@ impl JobKind {
             Self::Import => "import",
             Self::TagPreview => "tagPreview",
             Self::TagWrite => "tagWrite",
+            Self::Convert => "convert",
+        }
+    }
+
+    fn lane(self) -> Lane {
+        match self {
+            Self::Convert => Lane::Convert,
+            Self::Scan | Self::Import | Self::TagPreview | Self::TagWrite => Lane::Library,
         }
     }
 
@@ -45,6 +65,7 @@ impl JobKind {
             Self::Import => "import",
             Self::TagPreview => "tag preview",
             Self::TagWrite => "tag write",
+            Self::Convert => "conversion",
         }
     }
 }
@@ -60,15 +81,18 @@ pub struct JobInfo {
     pub error: Option<String>,
     pub scan: Option<ScanReport>,
     pub import: Option<ImportReport>,
+    pub convert: Option<ConvertReport>,
     pub created_at: i64,
     pub finished_at: Option<i64>,
 }
 
 /// What a finished job reports.
+#[derive(Default)]
 pub struct JobOutcome {
     pub canceled: bool,
     pub scan: Option<ScanReport>,
     pub import: Option<ImportReport>,
+    pub convert: Option<ConvertReport>,
 }
 
 /// A running job's view of the runner.
@@ -78,11 +102,46 @@ pub struct JobContext {
     cancel: Arc<AtomicBool>,
     db: Arc<Database>,
     events: Arc<dyn EventSink>,
+    running: Arc<Mutex<HashMap<String, Running>>>,
 }
 
 impl JobContext {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
     pub fn cancel_flag(&self) -> &AtomicBool {
         &self.cancel
+    }
+
+    /// Waits until no job is changing the library, then holds the others off until the claim
+    /// is dropped, for a job in another lane that ends by changing the library. Returns
+    /// `None` if the job is canceled while it waits.
+    pub fn claim_library(&self) -> Option<LibraryClaim> {
+        let key = format!("{}/library", self.id);
+        loop {
+            {
+                let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+                if !running.values().any(|job| job.lane == Lane::Library) {
+                    running.insert(
+                        key.clone(),
+                        Running {
+                            kind: self.kind,
+                            lane: Lane::Library,
+                            cancel: Arc::clone(&self.cancel),
+                        },
+                    );
+                    return Some(LibraryClaim {
+                        key,
+                        running: Arc::clone(&self.running),
+                    });
+                }
+            }
+            if self.cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            thread::sleep(LIBRARY_WAIT);
+        }
     }
 
     pub fn progress(&self, done: u64, total: u64) {
@@ -107,7 +166,23 @@ impl JobContext {
 
 struct Running {
     kind: JobKind,
+    lane: Lane,
     cancel: Arc<AtomicBool>,
+}
+
+/// Holds the library for a job from another lane. See `JobContext::claim_library`.
+pub struct LibraryClaim {
+    key: String,
+    running: Arc<Mutex<HashMap<String, Running>>>,
+}
+
+impl Drop for LibraryClaim {
+    fn drop(&mut self) {
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.key);
+    }
 }
 
 pub struct JobRunner {
@@ -150,11 +225,15 @@ impl JobRunner {
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
-            // Every kind writes to the library, so only one runs at a time.
-            if let Some(job) = running.values().next() {
+            if let Some(job) = running.values().find(|job| job.lane == kind.lane()) {
+                let message = if job.kind.lane() == job.lane {
+                    format!("a {} job is already running", job.kind.label())
+                } else {
+                    format!("a {} job is adding files to the library", job.kind.label())
+                };
                 return Err(ApiError {
                     code: ErrorCode::Conflict,
-                    message: format!("a {} job is already running", job.kind.label()),
+                    message,
                 });
             }
             self.db.write(|conn| insert_job(conn, &id, kind))?;
@@ -162,6 +241,7 @@ impl JobRunner {
                 id.clone(),
                 Running {
                     kind,
+                    lane: kind.lane(),
                     cancel: Arc::clone(&cancel),
                 },
             );
@@ -173,6 +253,7 @@ impl JobRunner {
             cancel,
             db: Arc::clone(&self.db),
             events: Arc::clone(&self.events),
+            running: Arc::clone(&self.running),
         };
         let running = Arc::clone(&self.running);
         thread::spawn(move || {
@@ -218,22 +299,17 @@ impl JobRunner {
             let rows = statement.query_map([LISTED_JOBS], |row| {
                 let payload: Option<String> = row.get(6)?;
                 let kind: String = row.get(1)?;
-                let is_import = kind == JobKind::Import.as_str();
+                let payload = payload.as_deref();
                 Ok(JobInfo {
                     id: row.get(0)?,
-                    kind,
                     status: row.get(2)?,
                     done: row.get::<_, i64>(3)? as u64,
                     total: row.get::<_, Option<i64>>(4)?.map(|total| total as u64),
                     error: row.get(5)?,
-                    scan: payload
-                        .as_deref()
-                        .filter(|_| !is_import)
-                        .and_then(|text| serde_json::from_str(text).ok()),
-                    import: payload
-                        .as_deref()
-                        .filter(|_| is_import)
-                        .and_then(|text| serde_json::from_str(text).ok()),
+                    scan: report(payload, &kind, JobKind::Scan),
+                    import: report(payload, &kind, JobKind::Import),
+                    convert: report(payload, &kind, JobKind::Convert),
+                    kind,
                     created_at: row.get(7)?,
                     finished_at: row.get(8)?,
                 })
@@ -241,6 +317,13 @@ impl JobRunner {
             Ok(rows.collect::<Result<_, _>>()?)
         })
     }
+}
+
+/// A finished job's report, read when the job is of the kind that writes it.
+fn report<T: DeserializeOwned>(payload: Option<&str>, kind: &str, of: JobKind) -> Option<T> {
+    payload
+        .filter(|_| kind == of.as_str())
+        .and_then(|text| serde_json::from_str(text).ok())
 }
 
 fn insert_job(conn: &Connection, id: &str, kind: JobKind) -> Result<(), DbError> {
@@ -266,10 +349,15 @@ fn finish_job(
                 "completed"
             },
             None,
-            match (&outcome.scan, &outcome.import) {
-                (_, Some(report)) => serde_json::to_string(report).ok(),
-                (Some(report), None) => serde_json::to_string(report).ok(),
-                (None, None) => None,
+            if let Some(report) = &outcome.import {
+                serde_json::to_string(report).ok()
+            } else if let Some(report) = &outcome.convert {
+                serde_json::to_string(report).ok()
+            } else {
+                outcome
+                    .scan
+                    .as_ref()
+                    .and_then(|report| serde_json::to_string(report).ok())
             },
         ),
         Err(message) => ("failed", Some(message.as_str()), None),
@@ -318,11 +406,7 @@ mod tests {
     }
 
     fn ok() -> Result<JobOutcome, String> {
-        Ok(JobOutcome {
-            canceled: false,
-            scan: None,
-            import: None,
-        })
+        Ok(JobOutcome::default())
     }
 
     #[test]
@@ -371,6 +455,102 @@ mod tests {
     }
 
     #[test]
+    fn a_conversion_runs_beside_a_library_job_but_not_beside_another_conversion() {
+        let (_dir, runner, events) = runner();
+        let (release, released) = mpsc::channel::<()>();
+        runner
+            .start(JobKind::Scan, move |_| {
+                released.recv_timeout(WAIT).unwrap();
+                ok()
+            })
+            .unwrap();
+        let (finish, finished) = mpsc::channel::<()>();
+        runner
+            .start(JobKind::Convert, move |_| {
+                finished.recv_timeout(WAIT).unwrap();
+                ok()
+            })
+            .unwrap();
+
+        let refused = runner.start(JobKind::Convert, |_| ok()).unwrap_err();
+        assert_eq!(refused.message, "a conversion job is already running");
+        let refused = runner.start(JobKind::TagWrite, |_| ok()).unwrap_err();
+        assert_eq!(refused.message, "a scan job is already running");
+
+        release.send(()).unwrap();
+        finish.send(()).unwrap();
+        wait_until_finished(&events);
+        wait_until_finished(&events);
+    }
+
+    #[test]
+    fn a_conversion_waits_for_the_library_and_holds_it_off_while_it_has_it() {
+        let (_dir, runner, events) = runner();
+        let (release, released) = mpsc::channel::<()>();
+        runner
+            .start(JobKind::Scan, move |_| {
+                released.recv_timeout(WAIT).unwrap();
+                ok()
+            })
+            .unwrap();
+        let (claimed_sender, claimed) = mpsc::channel::<()>();
+        let (finish, finished) = mpsc::channel::<()>();
+        runner
+            .start(JobKind::Convert, move |context| {
+                let claim = context.claim_library().unwrap();
+                claimed_sender.send(()).unwrap();
+                finished.recv_timeout(WAIT).unwrap();
+                drop(claim);
+                ok()
+            })
+            .unwrap();
+
+        // Still waiting while the scan runs.
+        assert!(claimed.recv_timeout(Duration::from_millis(300)).is_err());
+        release.send(()).unwrap();
+        wait_until_finished(&events);
+        claimed.recv_timeout(WAIT).unwrap();
+        let refused = runner.start(JobKind::Scan, |_| ok()).unwrap_err();
+        assert_eq!(
+            refused.message,
+            "a conversion job is adding files to the library"
+        );
+
+        finish.send(()).unwrap();
+        wait_until_finished(&events);
+        runner.start(JobKind::Scan, |_| ok()).unwrap();
+        wait_until_finished(&events);
+    }
+
+    #[test]
+    fn a_conversion_canceled_while_waiting_for_the_library_stops_waiting() {
+        let (_dir, runner, events) = runner();
+        let (release, released) = mpsc::channel::<()>();
+        runner
+            .start(JobKind::Scan, move |_| {
+                released.recv_timeout(WAIT).unwrap();
+                ok()
+            })
+            .unwrap();
+        let id = runner
+            .start(JobKind::Convert, |context| {
+                assert!(context.claim_library().is_none());
+                Ok(JobOutcome {
+                    canceled: true,
+                    ..JobOutcome::default()
+                })
+            })
+            .unwrap();
+        runner.cancel(&id);
+        wait_until_finished(&events);
+        release.send(()).unwrap();
+        wait_until_finished(&events);
+        let jobs = runner.list().unwrap();
+        let job = jobs.iter().find(|job| job.id == id).unwrap();
+        assert_eq!(job.status, "canceled");
+    }
+
+    #[test]
     fn canceling_sets_the_flag_and_the_job_records_it() {
         let (_dir, runner, events) = runner();
         let id = runner
@@ -382,8 +562,7 @@ mod tests {
                 }
                 Ok(JobOutcome {
                     canceled: true,
-                    scan: None,
-                    import: None,
+                    ..JobOutcome::default()
                 })
             })
             .unwrap();

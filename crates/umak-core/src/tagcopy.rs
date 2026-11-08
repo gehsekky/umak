@@ -21,7 +21,7 @@ use lofty::mp4::{Atom, AtomData, AtomIdent, Ilst, Mp4File};
 use lofty::mpeg::MpegFile;
 use lofty::ogg::tag::VorbisComments;
 use lofty::ogg::{OggPictureStorage, OpusFile};
-use lofty::picture::{Picture, PictureInformation};
+use lofty::picture::{MimeType, Picture, PictureInformation};
 use lofty::prelude::SplitTag;
 use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagExt, TagItem, TagType};
@@ -74,6 +74,16 @@ fn family(kind: FileType) -> Option<Family> {
 }
 
 impl Family {
+    /// MP4 marks each picture with its format, and has marks only for JPEG, PNG, BMP and GIF.
+    /// The other formats store a picture's MIME type as written.
+    fn holds_picture(self, picture: &Picture) -> bool {
+        self != Self::Mp4
+            || matches!(
+                picture.mime_type(),
+                None | Some(MimeType::Jpeg | MimeType::Png | MimeType::Bmp | MimeType::Gif)
+            )
+    }
+
     fn tag_type(self) -> TagType {
         match self {
             Self::Id3v2 => TagType::Id3v2,
@@ -113,6 +123,13 @@ impl Contents {
             other,
             pictures: tag.pictures().to_vec(),
         }
+    }
+
+    /// An empty field holds nothing to carry, and some formats drop one when it is written.
+    fn without_empty_values(mut self) -> Self {
+        self.items.retain(|(_, value)| !value.trim().is_empty());
+        self.custom.retain(|(_, value)| !value.trim().is_empty());
+        self
     }
 
     fn without_encoding_fields(mut self) -> Self {
@@ -292,7 +309,12 @@ fn write_across(
     for (key, value) in &contents.items {
         let key = lyrics_key(*key, target);
         let item = TagItem::new(key, ItemValue::Text(value.clone()));
-        if key.map_key(target.tag_type()).is_some() && generic.push(item) {
+        // Each format keeps a rating in its own way, ID3 in a binary frame that text from
+        // elsewhere does not fit, so a rating goes across by name like a field of its own.
+        if key != ItemKey::Popularimeter
+            && key.map_key(target.tag_type()).is_some()
+            && generic.push(item)
+        {
             continue;
         }
         // A field the target has no place of its own for goes across under the name it
@@ -303,7 +325,11 @@ fn write_across(
         }
     }
     for picture in &contents.pictures {
-        generic.push_picture(picture.clone());
+        if target.holds_picture(picture) {
+            generic.push_picture(picture.clone());
+        } else {
+            left_out.push("picture".to_owned());
+        }
     }
     left_out.extend(contents.other.iter().cloned());
     for (name, value) in &contents.custom {
@@ -474,7 +500,11 @@ fn missing_from(
         have.insert((custom_target_name(name, target), comparable(value)));
     }
     for (key, value) in &expected.items {
-        if !have.contains(&(target_name(*key, source, target), comparable(value))) {
+        let value = comparable(value);
+        let arrived = have.contains(&(target_name(*key, source, target), value.clone()))
+            || carried_name(*key, source)
+                .is_some_and(|name| have.contains(&(custom_target_name(&name, target), value)));
+        if !arrived {
             note(key_name(*key, source.tag_type()));
         }
     }
@@ -496,11 +526,42 @@ fn missing_from(
     missing
 }
 
+/// Copies an MP3's ID3v2 tag as the tag library reads it, which merges stacked tags the way
+/// the library sees them, leaving out the frames `keep` turns down.
+fn copy_id3v2_as_read(
+    source: &Path,
+    target: &mut File,
+    keep: impl Fn(&str, Option<&str>) -> bool,
+) -> Result<bool, TagWriteError> {
+    let options = parse_options(true).implicit_conversions(true);
+    let mut reader = BufReader::new(File::open(source)?);
+    let mut file =
+        MpegFile::read_from(&mut reader, options).map_err(|error| format_error(&error))?;
+    let Some(read) = file.remove_id3v2() else {
+        return Ok(false);
+    };
+    let mut tag = Id3v2Tag::new();
+    for frame in read {
+        let description = match &frame {
+            Frame::UserText(frame) => Some(frame.description.as_ref()),
+            Frame::Comment(frame) => Some(frame.description.as_ref()),
+            Frame::UnsynchronizedText(frame) => Some(frame.description.as_ref()),
+            _ => None,
+        };
+        if keep(frame.id_str(), description) {
+            tag.insert(frame);
+        }
+    }
+    tag.save_to(target, WriteOptions::new())
+        .map_err(|error| format_error(&error))?;
+    Ok(true)
+}
+
 /// Copies the tags and art of `source` onto `target`, a converted copy of it that has no
 /// tags yet, and checks the result by reading it back.
 pub fn copy_tags(source: &Path, target: &Path) -> Result<TagCopyReport, TagWriteError> {
     let (source_kind, contents) = read_contents(source)?;
-    let contents = contents.without_encoding_fields();
+    let contents = contents.without_encoding_fields().without_empty_values();
     let (target_kind, _) = read_contents(target)?;
     let unsupported = |kind: FileType| {
         TagWriteError::Unsupported(format!("tags in {kind:?} files cannot be copied yet"))
@@ -515,12 +576,17 @@ pub fn copy_tags(source: &Path, target: &Path) -> Result<TagCopyReport, TagWrite
         .open(target)?;
     let copied_whole = match (from, to) {
         (Family::Id3v2, Family::Id3v2) => {
-            // A version 2.2 tag cannot be copied as it is, and goes field by field instead.
-            match copy_id3v2(&mut File::open(source)?, &mut handle, |id, description| {
+            let keep = |id: &str, description: Option<&str>| {
                 !is_encoding_name(id) && !description.is_some_and(is_encoding_name)
-            }) {
+            };
+            match copy_id3v2(&mut File::open(source)?, &mut handle, keep) {
                 Ok(copied) => copied,
-                Err(TagWriteError::Unsupported(_)) => false,
+                // A version 2.2 tag, or tags stacked one after another, go across as the tag
+                // library reads them, in version 2.4.
+                Err(TagWriteError::Unsupported(_)) => {
+                    handle.rewind()?;
+                    copy_id3v2_as_read(source, &mut handle, keep)?
+                }
                 Err(error) => return Err(error),
             }
         }

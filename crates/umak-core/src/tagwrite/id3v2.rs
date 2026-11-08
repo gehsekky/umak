@@ -438,6 +438,9 @@ fn frame_description(frame: &RawFrame) -> Option<String> {
 /// and in the same version, leaving out the frames `keep` turns down. `keep` is given each
 /// frame's ID and, for frames that can repeat by name, its description. Returns false when
 /// the source has no tag to copy.
+///
+/// A source with a second tag straight after the first is refused as unsupported, since
+/// readers take frames from both, and copying the first alone would lose some.
 pub fn copy_tag(
     source: &mut File,
     target: &mut File,
@@ -446,6 +449,13 @@ pub fn copy_tag(
     let from = read_tag(source)?;
     if !from.exists {
         return Ok(false);
+    }
+    let mut next = [0; 3];
+    source.seek(SeekFrom::Start((HEADER_LEN + from.size) as u64))?;
+    if source.read_exact(&mut next).is_ok() && &next == b"ID3" {
+        return Err(TagWriteError::Unsupported(
+            "this file has more than one ID3v2 tag".to_owned(),
+        ));
     }
     let mut to = read_tag(target)?;
     if to.exists {

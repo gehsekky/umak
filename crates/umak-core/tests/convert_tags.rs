@@ -368,6 +368,104 @@ fn decode_problem(ffmpeg: &Ffmpeg, path: &Path) -> Option<String> {
     (!output.status.success() || !errors.is_empty()).then_some(errors)
 }
 
+/// An ID3v2.4 tag holding text frames, as raw bytes.
+fn raw_id3v24(frames: &[(&str, &str)]) -> Vec<u8> {
+    let synchsafe = |size: usize| {
+        (0..4)
+            .rev()
+            .map(move |shift| ((size >> (7 * shift)) & 0x7f) as u8)
+    };
+    let mut body = Vec::new();
+    for (id, text) in frames {
+        body.extend_from_slice(id.as_bytes());
+        body.extend(synchsafe(text.len() + 1));
+        body.extend([0, 0, 3]);
+        body.extend_from_slice(text.as_bytes());
+    }
+    let mut tag = b"ID3\x04\x00\x00".to_vec();
+    tag.extend(synchsafe(body.len()));
+    tag.extend(body);
+    tag
+}
+
+/// Some taggers add a tag after the one already there instead of changing it. Readers take
+/// frames from both, a later frame replacing an earlier one of its kind, and so does the copy.
+#[test]
+fn stacked_id3_tags_arrive_as_the_library_reads_them() {
+    let ffmpeg = ffmpeg();
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("stacked.mp3");
+    let mut args: Vec<&str> = vec!["-f", "lavfi", "-i", "sine=d=1"];
+    args.extend(args_without_tags());
+    args.extend(["-c:a", "libmp3lame"]);
+    run_ffmpeg(&ffmpeg, &args, &source);
+
+    let mut first = Id3v2Tag::new();
+    first.set_title("Title".to_owned());
+    first.set_album("First Album".to_owned());
+    first.insert(Frame::UserText(ExtendedTextFrame::new(
+        TextEncoding::UTF8,
+        "MY FIELD",
+        "kept",
+    )));
+    first
+        .save_to_path(&source, WriteOptions::new().use_id3v23(true))
+        .unwrap();
+    let mut bytes = fs::read(&source).unwrap();
+    let size = bytes[6..10]
+        .iter()
+        .fold(0, |size, &byte| (size << 7) | usize::from(byte));
+    let second = raw_id3v24(&[("TALB", "Second Album"), ("TDRC", "2009")]);
+    bytes.splice(10 + size..10 + size, second);
+    fs::write(&source, bytes).unwrap();
+    let read = model(&source);
+    assert_eq!(read.album.as_deref(), Some("Second Album"));
+
+    for encoding in [Encoding::Mp3Vbr(2), Encoding::Flac] {
+        let output = dir.path().join(format!("out.{}", encoding.extension()));
+        let report = convert(&ffmpeg, &source, output.clone(), encoding);
+        assert_eq!(report.left_out, Vec::<String>::new(), "{encoding:?}");
+        let tags = model(&output);
+        assert_eq!(tags.title.as_deref(), Some("Title"), "{encoding:?}");
+        assert_eq!(tags.album.as_deref(), Some("Second Album"), "{encoding:?}");
+        assert_eq!(tags.year, read.year, "{encoding:?}");
+        assert_eq!(custom(&output, "MY FIELD"), ["kept"], "{encoding:?}");
+    }
+}
+
+/// A rating written as text, as some players do, cannot become ID3's binary rating frame,
+/// so it goes across under its own name.
+#[test]
+fn a_rating_in_text_goes_across_by_name() {
+    let ffmpeg = ffmpeg();
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("rated.flac");
+    run_ffmpeg(
+        &ffmpeg,
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=d=1",
+            "-c:a",
+            "flac",
+            "-fflags",
+            "+bitexact",
+            "-metadata",
+            "TITLE=Rated",
+            "-metadata",
+            "RATING=2.5",
+        ],
+        &source,
+    );
+    for encoding in [Encoding::Mp3Vbr(2), Encoding::Aac(128)] {
+        let output = dir.path().join(format!("out.{}", encoding.extension()));
+        let report = convert(&ffmpeg, &source, output.clone(), encoding);
+        assert_eq!(report.left_out, Vec::<String>::new(), "{encoding:?}");
+        assert_eq!(custom(&output, "RATING"), ["2.5"], "{encoding:?}");
+    }
+}
+
 #[test]
 fn reports_what_the_new_format_cannot_hold() {
     let ffmpeg = ffmpeg();
@@ -380,6 +478,12 @@ fn reports_what_the_new_format_cannot_hold() {
 
     let mut tag = Id3v2Tag::new();
     tag.set_title("Odd".to_owned());
+    // An empty field, which has nothing to carry and is not reported.
+    tag.insert(Frame::Text(lofty::id3::v2::TextInformationFrame::new(
+        lofty::id3::v2::FrameId::Valid("TCOM".into()),
+        TextEncoding::UTF8,
+        String::new(),
+    )));
     // A private frame, which only ID3 has, and a field name a Vorbis comment cannot use.
     tag.insert(Frame::Private(lofty::id3::v2::PrivateFrame::new(
         "com.example",
@@ -401,6 +505,19 @@ fn reports_what_the_new_format_cannot_hold() {
         Picture::unchecked(fs::read(&gif).unwrap())
             .pic_type(PictureType::CoverFront)
             .mime_type(MimeType::Gif)
+            .build(),
+    );
+    // WebP art, which MP4 has no type for.
+    let webp = dir.path().join("art.webp");
+    run_ffmpeg(
+        &ffmpeg,
+        &["-f", "lavfi", "-i", "color=c=blue:s=8x8", "-frames:v", "1"],
+        &webp,
+    );
+    tag.insert_picture(
+        Picture::unchecked(fs::read(&webp).unwrap())
+            .pic_type(PictureType::CoverBack)
+            .mime_type(MimeType::Unknown("image/webp".to_owned()))
             .build(),
     );
     let mut file = fs::OpenOptions::new()
@@ -430,10 +547,14 @@ fn reports_what_the_new_format_cannot_hold() {
         Encoding::Aac(128),
     );
     assert!(report.left_out.contains(&"PRIV".to_owned()), "{report:?}");
+    assert!(
+        report.left_out.contains(&"picture".to_owned()),
+        "{report:?}"
+    );
     assert_eq!(
         picture_data(&dir.path().join("odd.m4a")),
         [fs::read(&gif).unwrap()],
-        "GIF art is kept"
+        "GIF art is kept, and WebP is not"
     );
     // Freeform MP4 atoms take any name.
     assert!(

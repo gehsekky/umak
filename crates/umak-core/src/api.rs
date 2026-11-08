@@ -6,7 +6,7 @@
 //! implementation. To add a command, implement `Command` and list it in `commands!`.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 use umak_audio::protocol::ReplayGainMode;
+use umak_convert::Ffmpeg;
 
 use crate::convert::{self, ConvertPlan, ConvertPreset, ConvertSettings};
+use crate::convert_job::{self, ConversionInfo, ConvertFilePage, ConvertRequest};
 use crate::db::{Database, DbError, new_public_id};
 use crate::duplicates::{self, DuplicateMatch, DuplicatePage};
 use crate::jobs::{JobInfo, JobKind, JobOutcome, JobRunner};
@@ -40,6 +42,8 @@ pub enum ErrorCode {
     InvalidArgs,
     NotFound,
     Conflict,
+    /// Something the command needs is not installed or cannot be reached, such as FFmpeg.
+    Unavailable,
     Internal,
 }
 
@@ -138,6 +142,8 @@ pub struct Core {
     events: Arc<dyn EventSink>,
     jobs: JobRunner,
     player: Player,
+    /// Found on first use, and looked for again until it is found.
+    ffmpeg: Mutex<Option<Arc<Ffmpeg>>>,
 }
 
 impl Core {
@@ -156,13 +162,28 @@ impl Core {
         let events: Arc<dyn EventSink> = Arc::from(events);
         let jobs = JobRunner::new(Arc::clone(&db), Arc::clone(&events))?;
         tagedit::recover_interrupted(&db)?;
+        convert_job::recover_interrupted(&db)?;
         let player = Player::new(Arc::clone(&db), Arc::clone(&events), backend);
         Ok(Self {
             db,
             events,
             jobs,
             player,
+            ffmpeg: Mutex::default(),
         })
+    }
+
+    fn ffmpeg(&self) -> Result<Arc<Ffmpeg>, ApiError> {
+        let mut found = self.ffmpeg.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(ffmpeg) = &*found {
+            return Ok(Arc::clone(ffmpeg));
+        }
+        let ffmpeg = Arc::new(
+            Ffmpeg::find()
+                .map_err(|error| ApiError::new(ErrorCode::Unavailable, error.to_string()))?,
+        );
+        *found = Some(Arc::clone(&ffmpeg));
+        Ok(ffmpeg)
     }
 }
 
@@ -261,6 +282,10 @@ commands![
     UndoTagEdit,
     ListConvertPresets,
     PlanConversion,
+    StartConversion,
+    RetryConversion,
+    GetConversion,
+    GetConversionFiles,
     GetDuplicates,
     SetTrackRating,
     CreateSmartPlaylist,
@@ -590,6 +615,117 @@ impl Command for PlanConversion {
             convert::plan_files(conn, &self.track_ids, &self.settings, &self.folder)
         })?;
         Ok(convert::summarize(&files, &self.settings))
+    }
+}
+
+/// Converts tracks in the background. Each file's outcome is kept, and progress arrives as
+/// events.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartConversion {
+    pub track_ids: Vec<String>,
+    pub settings: ConvertSettings,
+    /// An absolute path, created if it does not exist.
+    pub folder: String,
+    /// How many files to convert at once. Defaults to half the processor's threads, which
+    /// leaves room for playback and the rest of the app.
+    pub threads: Option<u32>,
+    /// Adds the converted files to the library: to the root the folder is in, or with the
+    /// folder as a new root. Not for Opus, which Umak cannot play.
+    pub add_to_library: bool,
+}
+
+impl Command for StartConversion {
+    const NAME: &'static str = "convert.start";
+    type Output = JobRef;
+
+    fn run(self, core: &Core) -> Result<JobRef, ApiError> {
+        let request = ConvertRequest {
+            settings: self.settings,
+            folder: self.folder,
+            threads: self.threads,
+            add_to_library: self.add_to_library,
+        };
+        start_conversion(core, &self.track_ids, request)
+    }
+}
+
+/// Converts again, as a new batch with the same settings, the files of a batch that failed
+/// or were not reached.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetryConversion {
+    pub job_id: String,
+}
+
+impl Command for RetryConversion {
+    const NAME: &'static str = "convert.retry";
+    type Output = JobRef;
+
+    fn run(self, core: &Core) -> Result<JobRef, ApiError> {
+        let (track_ids, request) = core
+            .db
+            .read(|conn| convert_job::retry_request(conn, &self.job_id))?;
+        start_conversion(core, &track_ids, request)
+    }
+}
+
+fn start_conversion(
+    core: &Core,
+    track_ids: &[String],
+    request: ConvertRequest,
+) -> Result<JobRef, ApiError> {
+    let ffmpeg = core.ffmpeg()?;
+    let prepared = convert_job::prepare(&core.db, &ffmpeg, track_ids, request)?;
+    let db = Arc::clone(&core.db);
+    let events = Arc::clone(&core.events);
+    let id = core.jobs.start(JobKind::Convert, move |context| {
+        convert_job::run(&db, events.as_ref(), context, &ffmpeg, prepared)
+    })?;
+    Ok(JobRef { id })
+}
+
+/// A conversion batch's settings and how its files stand.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetConversion {
+    pub job_id: String,
+}
+
+impl Command for GetConversion {
+    const NAME: &'static str = "convert.get";
+    type Output = ConversionInfo;
+
+    fn run(self, core: &Core) -> Result<ConversionInfo, ApiError> {
+        core.db.read(|conn| convert_job::info(conn, &self.job_id))
+    }
+}
+
+/// A page of a conversion batch's files, in order.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetConversionFiles {
+    pub job_id: String,
+    /// Only files not converted, or converted without all of their tags.
+    pub problems_only: bool,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Command for GetConversionFiles {
+    const NAME: &'static str = "convert.files";
+    type Output = ConvertFilePage;
+
+    fn run(self, core: &Core) -> Result<ConvertFilePage, ApiError> {
+        core.db.read(|conn| {
+            convert_job::files(
+                conn,
+                &self.job_id,
+                self.problems_only,
+                self.offset,
+                self.limit,
+            )
+        })
     }
 }
 
@@ -1042,8 +1178,8 @@ impl Command for StartImport {
             events.emit(&CoreEvent::PlaylistsChanged);
             Ok(JobOutcome {
                 canceled: report.canceled,
-                scan: None,
                 import: Some(report),
+                ..JobOutcome::default()
             })
         })?;
         Ok(JobRef { id })
@@ -1094,8 +1230,7 @@ fn start_tag_preview(
         .map_err(|error| error.message)?;
         Ok(JobOutcome {
             canceled,
-            scan: None,
-            import: None,
+            ..JobOutcome::default()
         })
     })?;
     Ok(TagEditJob { edit_id, job_id })
@@ -1295,8 +1430,7 @@ impl Command for WriteTagEdit {
             events.emit(&CoreEvent::TagEditsChanged);
             Ok(JobOutcome {
                 canceled: canceled.map_err(|error| error.message)?,
-                scan: None,
-                import: None,
+                ..JobOutcome::default()
             })
         })?;
         Ok(JobRef { id })
@@ -1378,7 +1512,7 @@ impl Command for StartScan {
             Ok(JobOutcome {
                 canceled: report.canceled,
                 scan: Some(report),
-                import: None,
+                ..JobOutcome::default()
             })
         })?;
         Ok(JobRef { id })

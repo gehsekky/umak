@@ -149,6 +149,11 @@ impl ConvertSettings {
         self.encoding().extension()
     }
 
+    /// FFmpeg's name for the encoder these settings need.
+    pub fn encoder(&self) -> &'static str {
+        self.encoding().encoder()
+    }
+
     /// The rate to resample a file to, or `None` to keep its own. A file whose rate the
     /// library does not know is left to FFmpeg, which picks one the encoder takes.
     fn output_rate(&self, source: Option<u32>) -> Option<u32> {

@@ -213,7 +213,7 @@ impl Ffmpeg {
             reason,
         };
         let ask = |arg: &str| -> Result<String, ConvertError> {
-            let output = hidden(&path)
+            let output = hidden(&path, Priority::Normal)
                 .args(["-hide_banner", arg])
                 .output()
                 .map_err(|error| not_ffmpeg(error.to_string()))?;
@@ -267,7 +267,7 @@ impl Ffmpeg {
         // Declared before the process, so the file is removed after the process has ended
         // and let go of it.
         let partial = Partial(Some(partial_path(output)));
-        let mut command = hidden(&self.path);
+        let mut command = hidden(&self.path, Priority::Low);
         command
             .args(["-hide_banner", "-nostdin", "-nostats", "-loglevel", "error"])
             .args(["-progress", "pipe:1", "-stats_period", REPORT_PERIOD])
@@ -348,7 +348,9 @@ fn exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
-fn partial_path(output: &Path) -> PathBuf {
+/// Where output is written until it is complete. A process that ends without finishing, as
+/// when the app is closed mid-batch, can leave one behind for its owner to remove.
+pub fn partial_path(output: &Path) -> PathBuf {
     let mut name = OsString::from(".");
     name.push(output.file_name().unwrap_or_default());
     name.push(PARTIAL_SUFFIX);
@@ -363,16 +365,30 @@ fn file_url(path: &Path) -> OsString {
 }
 
 /// A command whose process opens no console window.
-fn hidden(program: &Path) -> Command {
+fn hidden(program: &Path, priority: Priority) -> Command {
     let mut command = Command::new(program);
     command.stdin(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        let priority = match priority {
+            Priority::Normal => 0,
+            Priority::Low => BELOW_NORMAL_PRIORITY_CLASS,
+        };
+        command.creation_flags(CREATE_NO_WINDOW | priority);
     }
+    #[cfg(not(windows))]
+    let _ = priority;
     command
+}
+
+#[derive(Clone, Copy)]
+enum Priority {
+    Normal,
+    /// Encoding gives way to playback and the app when they need the processor.
+    Low,
 }
 
 /// Ends the process if it is still running when dropped.

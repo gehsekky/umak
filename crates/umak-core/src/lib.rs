@@ -4,6 +4,7 @@
 
 pub mod api;
 pub mod convert;
+pub mod convert_job;
 pub mod db;
 pub mod duplicates;
 pub mod jobs;
