@@ -4431,6 +4431,7 @@ dependencies = [
  "thiserror 2.0.21",
  "ts-rs",
  "umak-audio",
+ "umak-convert",
  "unicode-normalization",
  "uuid",
 ]

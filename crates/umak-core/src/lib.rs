@@ -3,6 +3,7 @@
 //! This crate must never depend on Tauri or UI code.
 
 pub mod api;
+pub mod convert;
 pub mod db;
 pub mod duplicates;
 pub mod jobs;

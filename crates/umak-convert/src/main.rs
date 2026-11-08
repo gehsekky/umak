@@ -63,6 +63,8 @@ fn main() -> ExitCode {
                 input: PathBuf::from(input),
                 output: PathBuf::from(output),
                 encoding,
+                sample_rate: None,
+                bits: None,
             };
             let started = std::time::Instant::now();
             let mut last = None;

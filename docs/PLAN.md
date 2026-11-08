@@ -617,6 +617,8 @@ Exit criteria:
 
 Found while building step 1, November 2026: FFmpeg's AAC output marks its encoder delay with an MP4 edit list, not the iTunes tag the engine reads, so converted AAC plays with about 40 ms of extra silence until one of them is handled. MP3 output carries a LAME tag and decodes to the exact source length. The engine cannot play Opus, so Opus output is for other players and devices.
 
+Step 2, November 2026: sample rate and bit depth are limits, not targets, so files already at or under them are left alone. A file above the rate limit comes down to a lower rate that divides its own evenly where one fits, so 176.4 kHz goes to 44.1 kHz rather than 48 kHz, and MP3 output is held to 48 kHz and AAC to 96 kHz without being asked. Bit depth is reduced with triangular dither, and lossy sources converted to a lossless format come out at 16 bits. Output names keep the source's folders and name under its library root with the new extension, compared without regard to case. A file already at the output path is left alone and skipped, so converting again into the same folder carries on where a batch stopped, and two sources that would land in the same place are both held back. Planning all 21,387 tracks of the library takes about 0.22 s.
+
 Development uses a locally installed FFmpeg. Shipping needs an LGPL build, chosen and reviewed with the installers in phase 5.
 
 Phase 2 closed in November 2026 at the owner's go-ahead. The listening check in its brief was not separately reported.

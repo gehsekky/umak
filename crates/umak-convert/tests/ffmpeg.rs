@@ -12,7 +12,7 @@ use lofty::file::{AudioFile, FileType, TaggedFileExt};
 use lofty::mp4::{Mp4Codec, Mp4File};
 use lofty::probe::Probe;
 use lofty::tag::ItemKey;
-use umak_convert::{Conversion, ConvertError, Encoding, Ffmpeg};
+use umak_convert::{Conversion, ConvertError, Encoding, Ffmpeg, SampleBits};
 
 fn ffmpeg() -> Ffmpeg {
     Ffmpeg::find().unwrap_or_else(|error| panic!("these tests need FFmpeg: {error}"))
@@ -20,8 +20,15 @@ fn ffmpeg() -> Ffmpeg {
 
 /// Writes a sine tone as 16-bit PCM WAV, without FFmpeg.
 fn write_wav(path: &Path, rate: u32, channels: u16, seconds: f64) {
+    write_wav_bits(path, rate, channels, seconds, 16);
+}
+
+/// Writes a sine tone as PCM WAV of 16 or 24 bits, without FFmpeg.
+fn write_wav_bits(path: &Path, rate: u32, channels: u16, seconds: f64, bits: u16) {
+    let bytes_per_sample = bits / 8;
     let frames = (f64::from(rate) * seconds) as u32;
-    let data_len = frames * u32::from(channels) * 2;
+    let block = channels * bytes_per_sample;
+    let data_len = frames * u32::from(block);
     let mut bytes = Vec::with_capacity(44 + data_len as usize);
     bytes.extend_from_slice(b"RIFF");
     bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
@@ -30,16 +37,17 @@ fn write_wav(path: &Path, rate: u32, channels: u16, seconds: f64) {
     bytes.extend_from_slice(&1u16.to_le_bytes());
     bytes.extend_from_slice(&channels.to_le_bytes());
     bytes.extend_from_slice(&rate.to_le_bytes());
-    bytes.extend_from_slice(&(rate * u32::from(channels) * 2).to_le_bytes());
-    bytes.extend_from_slice(&(channels * 2).to_le_bytes());
-    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(&(rate * u32::from(block)).to_le_bytes());
+    bytes.extend_from_slice(&block.to_le_bytes());
+    bytes.extend_from_slice(&bits.to_le_bytes());
     bytes.extend_from_slice(b"data");
     bytes.extend_from_slice(&data_len.to_le_bytes());
     for frame in 0..frames {
         let value = (f64::from(frame) / f64::from(rate) * 440.0 * TAU).sin() * 0.3;
-        let sample = (value * f64::from(i16::MAX)) as i16;
+        let full = f64::from((1u32 << (bits - 1)) - 1);
+        let sample = ((value * full) as i32).to_le_bytes();
         for _ in 0..channels {
-            bytes.extend_from_slice(&sample.to_le_bytes());
+            bytes.extend_from_slice(&sample[..usize::from(bytes_per_sample)]);
         }
     }
     fs::write(path, bytes).unwrap();
@@ -69,6 +77,8 @@ fn conversion(input: &Path, output: PathBuf, encoding: Encoding) -> Conversion {
         input: input.to_owned(),
         output,
         encoding,
+        sample_rate: None,
+        bits: None,
     }
 }
 
@@ -173,6 +183,64 @@ fn picks_a_rate_the_encoder_takes() {
         assert!(
             rate.is_some_and(|rate| rate <= 48_000),
             "{encoding:?} at {rate:?}"
+        );
+    }
+}
+
+#[test]
+fn reduces_rate_and_depth_when_asked() {
+    let ffmpeg = ffmpeg();
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("hires.wav");
+    write_wav_bits(&input, 96_000, 2, 1.0, 24);
+    let cases = [
+        (Encoding::Flac, None, None, 96_000, 24),
+        (
+            Encoding::Flac,
+            Some(48_000),
+            Some(SampleBits::Sixteen),
+            48_000,
+            16,
+        ),
+        (Encoding::Alac, None, Some(SampleBits::Sixteen), 96_000, 16),
+        (
+            Encoding::Alac,
+            Some(44_100),
+            Some(SampleBits::TwentyFour),
+            44_100,
+            24,
+        ),
+        (
+            Encoding::Aac(256),
+            Some(48_000),
+            Some(SampleBits::Sixteen),
+            48_000,
+            0,
+        ),
+    ];
+    for (index, (encoding, sample_rate, bits, rate, depth)) in cases.into_iter().enumerate() {
+        let output = dir
+            .path()
+            .join(format!("out{index}.{}", encoding.extension()));
+        let conversion = Conversion {
+            sample_rate,
+            bits,
+            ..conversion(&input, output.clone(), encoding)
+        };
+        ffmpeg
+            .convert(&conversion, &AtomicBool::new(false), |_| {})
+            .unwrap_or_else(|error| panic!("{index}: {error}"));
+        let tagged = Probe::open(&output).unwrap().read().unwrap();
+        let properties = tagged.properties();
+        assert_eq!(properties.sample_rate(), Some(rate), "{index}");
+        if depth > 0 {
+            assert_eq!(properties.bit_depth(), Some(depth), "{index}");
+        }
+        let off = properties.duration().abs_diff(Duration::from_secs(1));
+        assert!(
+            off < Duration::from_millis(30),
+            "{index} lasts {:?}",
+            properties.duration()
         );
     }
 }

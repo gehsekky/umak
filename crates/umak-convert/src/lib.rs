@@ -73,6 +73,10 @@ impl Encoding {
         }
     }
 
+    pub fn is_lossless(self) -> bool {
+        matches!(self, Self::Flac | Self::Alac)
+    }
+
     pub fn extension(self) -> &'static str {
         match self {
             Self::Flac => "flac",
@@ -110,12 +114,61 @@ impl Encoding {
     }
 }
 
+/// A bit depth for lossless output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleBits {
+    Sixteen,
+    TwentyFour,
+}
+
 /// One file to convert. The output must not exist yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conversion {
     pub input: PathBuf,
     pub output: PathBuf,
     pub encoding: Encoding,
+    /// Resamples to this rate. `None` keeps the input's rate where the encoder takes it.
+    pub sample_rate: Option<u32>,
+    /// Reduces lossless output to this depth, with dither. `None` keeps the input's depth.
+    /// Lossy encoders choose their own, so it does not apply to them.
+    pub bits: Option<SampleBits>,
+}
+
+impl Conversion {
+    fn format_args(&self) -> Vec<String> {
+        let bits = self.bits.filter(|_| self.encoding.is_lossless());
+        if self.sample_rate.is_none() && bits.is_none() {
+            return Vec::new();
+        }
+        // One resampler changes both rate and depth, with the dither that the one FFmpeg
+        // adds on its own leaves out.
+        let mut args = vec![
+            "-af".to_owned(),
+            "aresample=dither_method=triangular".to_owned(),
+        ];
+        if let Some(rate) = self.sample_rate {
+            args.extend(["-ar".to_owned(), rate.to_string()]);
+        }
+        // ALAC takes planar samples and FLAC interleaved ones.
+        let planar = if self.encoding == Encoding::Alac {
+            "p"
+        } else {
+            ""
+        };
+        match bits {
+            None => {}
+            Some(SampleBits::Sixteen) => {
+                args.extend(["-sample_fmt".to_owned(), format!("s16{planar}")])
+            }
+            Some(SampleBits::TwentyFour) => args.extend([
+                "-sample_fmt".to_owned(),
+                format!("s32{planar}"),
+                "-bits_per_raw_sample".to_owned(),
+                "24".to_owned(),
+            ]),
+        }
+        args
+    }
 }
 
 /// An FFmpeg executable that has answered as one.
@@ -228,6 +281,7 @@ impl Ffmpeg {
             // Leaves out the encoder's name, which would otherwise be written as a tag.
             .args(["-fflags", "+bitexact"])
             .args(encoding.args())
+            .args(conversion.format_args())
             .args(["-f", encoding.muxer(), "-y"])
             .arg(file_url(partial.path()))
             .stdout(Stdio::piped())
@@ -510,6 +564,48 @@ mod tests {
     }
 
     #[test]
+    fn changes_rate_and_depth_only_when_asked() {
+        let mut conversion = Conversion {
+            input: PathBuf::from("in.flac"),
+            output: PathBuf::from("out.flac"),
+            encoding: Encoding::Flac,
+            sample_rate: None,
+            bits: None,
+        };
+        assert!(conversion.format_args().is_empty());
+        conversion.bits = Some(SampleBits::Sixteen);
+        assert_eq!(
+            conversion.format_args(),
+            [
+                "-af",
+                "aresample=dither_method=triangular",
+                "-sample_fmt",
+                "s16"
+            ]
+        );
+        conversion.encoding = Encoding::Alac;
+        conversion.sample_rate = Some(48_000);
+        conversion.bits = Some(SampleBits::TwentyFour);
+        assert_eq!(
+            conversion.format_args()[2..],
+            [
+                "-ar",
+                "48000",
+                "-sample_fmt",
+                "s32p",
+                "-bits_per_raw_sample",
+                "24"
+            ]
+        );
+        conversion.encoding = Encoding::Aac(256);
+        conversion.sample_rate = None;
+        assert!(
+            conversion.format_args().is_empty(),
+            "lossy encoders choose their own depth"
+        );
+    }
+
+    #[test]
     fn refuses_an_encoder_it_does_not_have() {
         let ffmpeg = Ffmpeg {
             path: PathBuf::from("ffmpeg-that-is-never-run"),
@@ -520,6 +616,8 @@ mod tests {
             input: PathBuf::from("in.wav"),
             output: PathBuf::from("out.opus"),
             encoding: Encoding::Opus(160),
+            sample_rate: None,
+            bits: None,
         };
         let result = ffmpeg.convert(&conversion, &AtomicBool::new(false), |_| {});
         assert!(matches!(

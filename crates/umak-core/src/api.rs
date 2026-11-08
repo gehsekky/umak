@@ -16,6 +16,7 @@ use serde_json::Value;
 use ts_rs::TS;
 use umak_audio::protocol::ReplayGainMode;
 
+use crate::convert::{self, ConvertPlan, ConvertPreset, ConvertSettings};
 use crate::db::{Database, DbError, new_public_id};
 use crate::duplicates::{self, DuplicateMatch, DuplicatePage};
 use crate::jobs::{JobInfo, JobKind, JobOutcome, JobRunner};
@@ -258,6 +259,8 @@ commands![
     WriteTagEdit,
     DiscardTagEdit,
     UndoTagEdit,
+    ListConvertPresets,
+    PlanConversion,
     GetDuplicates,
     SetTrackRating,
     CreateSmartPlaylist,
@@ -545,6 +548,49 @@ impl Command for PreviewSmartRule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 pub struct FormatList {
     pub formats: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct ConvertPresetList {
+    pub presets: Vec<ConvertPreset>,
+}
+
+/// The built-in conversion settings to start from.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListConvertPresets {}
+
+impl Command for ListConvertPresets {
+    const NAME: &'static str = "convert.presets";
+    type Output = ConvertPresetList;
+
+    fn run(self, _core: &Core) -> Result<ConvertPresetList, ApiError> {
+        Ok(ConvertPresetList {
+            presets: convert::presets(),
+        })
+    }
+}
+
+/// Where converted files would go and which can be converted, without converting anything.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanConversion {
+    pub track_ids: Vec<String>,
+    pub settings: ConvertSettings,
+    /// An absolute path. It need not exist yet.
+    pub folder: String,
+}
+
+impl Command for PlanConversion {
+    const NAME: &'static str = "convert.plan";
+    type Output = ConvertPlan;
+
+    fn run(self, core: &Core) -> Result<ConvertPlan, ApiError> {
+        let files = core.db.read(|conn| {
+            convert::plan_files(conn, &self.track_ids, &self.settings, &self.folder)
+        })?;
+        Ok(convert::summarize(&files, &self.settings))
+    }
 }
 
 /// The formats in the library, to choose from in a rule.
