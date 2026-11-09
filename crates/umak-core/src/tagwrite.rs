@@ -440,6 +440,12 @@ fn apply_change(path: &Path, kind: FileType, change: Change<'_>) -> Result<(), T
                 MpegFile::read_from(&mut handle, options).map_err(|error| format_error(&error))?;
             if file.id3v1().is_some() || file.ape().is_some() {
                 let _ = file.remove_id3v2();
+                // Before writing, the tag library checks the file is MPEG by skipping the first
+                // ID3v2 tag and searching on for audio. Tags after the first count against how
+                // far it searches, so it may search the whole file.
+                let len = handle.metadata()?.len();
+                let search = parse_options(true).max_junk_bytes(len as usize);
+                let write_options = WriteOptions::new().parse_options(search);
                 match change {
                     Change::Edit(edits) => {
                         for edit in edits {
@@ -461,7 +467,7 @@ fn apply_change(path: &Path, kind: FileType, change: Change<'_>) -> Result<(), T
                     }
                 }
                 handle.rewind()?;
-                file.save_to(&mut handle, WriteOptions::new())
+                file.save_to(&mut handle, write_options)
                     .map_err(|error| format_error(&error))?;
             }
         }
@@ -1536,6 +1542,115 @@ mod tests {
         #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         fs::set_permissions(&file.path, permissions).unwrap();
+    }
+
+    /// Two tags one after another, as some taggers leave them: readers take the second
+    /// tag's album and year over the first's.
+    fn stacked_tags() -> (Vec<u8>, Vec<u8>) {
+        let first = id3_tag(
+            3,
+            &[
+                ("TIT2", latin1("Title")),
+                ("TALB", latin1("First Album")),
+                ("TXXX", user_text("MY FIELD", "kept")),
+            ],
+        );
+        let second = id3_tag(
+            4,
+            &[("TALB", latin1("Second Album")), ("TDRC", latin1("2009"))],
+        );
+        (first, second)
+    }
+
+    /// The tags at the start of a file, as (version, size) pairs.
+    fn stack_layout(bytes: &[u8]) -> Vec<(u8, usize)> {
+        let mut layout = Vec::new();
+        let mut at = 0;
+        while bytes[at..].starts_with(b"ID3") {
+            let size = bytes[at + 6..at + 10]
+                .iter()
+                .fold(0, |size, byte| (size << 7) | usize::from(*byte));
+            layout.push((bytes[at + 3], size));
+            at += 10 + size;
+        }
+        layout
+    }
+
+    #[test]
+    fn stacked_tags_are_edited_as_readers_see_them_and_undone_into_each_tag() {
+        let (first, second) = stacked_tags();
+        let bytes = [first.clone(), second.clone(), mpeg_audio()].concat();
+        let file = fixture("a.mp3", &bytes);
+        let tags_before = tags_of(&file.path);
+        assert_eq!(tags_before.album.as_deref(), Some("Second Album"));
+
+        let fields = [TagField::Album];
+        let saved = snapshot_tags(&file.path, &fields).unwrap();
+        write_previewed(&file.path, &[edit(TagField::Album, &["New Album"])], &saved).unwrap();
+        let tags = tags_of(&file.path);
+        assert_eq!(tags.album.as_deref(), Some("New Album"));
+        assert_eq!(tags.title.as_deref(), Some("Title"));
+        assert_eq!(tags.year, Some(2009));
+        // Each tag keeps its version. The second lost its album and nothing else, and the
+        // first holds the padding, so the audio has not moved.
+        let after = fs::read(&file.path).unwrap();
+        let layout = stack_layout(&after);
+        assert_eq!(layout.len(), 2);
+        assert_eq!((layout[0].0, layout[1].0), (3, 4));
+        assert_eq!(layout[1].1, 15, "only TDRC is left in the second tag");
+        assert_eq!(after.len(), bytes.len());
+        assert!(after.ends_with(&mpeg_audio()));
+
+        let seen = snapshot_tags(&file.path, &fields).unwrap();
+        let expected = [FieldEdit {
+            field: TagField::Album,
+            values: field_values(&tags_before, TagField::Album),
+        }];
+        restore_tags(&file.path, &saved, &expected, &seen).unwrap();
+        assert_eq!(tags_of(&file.path), tags_before);
+        assert_eq!(snapshot_tags(&file.path, &fields).unwrap(), saved);
+        let restored = fs::read(&file.path).unwrap();
+        // The album is back in the second tag, in its exact bytes, though after the year now.
+        let second_at = 10 + stack_layout(&restored)[0].1;
+        let restored_second = &restored[second_at..second_at + second.len()];
+        assert_eq!(&restored_second[..10], &second[..10]);
+        let album = &second[10..33];
+        assert!(
+            restored_second
+                .windows(album.len())
+                .any(|frame| frame == album)
+        );
+    }
+
+    #[test]
+    fn a_stacked_file_with_tags_at_the_end_is_written_whatever_the_second_tag_holds() {
+        let (first, _) = stacked_tags();
+        // Larger than the tag library searches past the first tag for the audio.
+        let long = "x".repeat(3000);
+        let second = id3_tag(
+            4,
+            &[
+                ("TALB", latin1("Second Album")),
+                ("TXXX", user_text("LONG", &long)),
+            ],
+        );
+        let file = fixture(
+            "a.mp3",
+            &[first, second, mpeg_audio(), id3v1("Title")].concat(),
+        );
+        write_tags(
+            &file.path,
+            &[
+                edit(TagField::Title, &["New"]),
+                edit(TagField::Album, &["New Album"]),
+            ],
+        )
+        .unwrap();
+        let tags = tags_of(&file.path);
+        assert_eq!(tags.title.as_deref(), Some("New"));
+        assert_eq!(tags.album.as_deref(), Some("New Album"));
+        let after = fs::read(&file.path).unwrap();
+        assert_eq!(&after[after.len() - 125..after.len() - 122], b"New");
     }
 
     #[test]

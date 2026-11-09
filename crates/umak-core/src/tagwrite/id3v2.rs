@@ -2,6 +2,11 @@
 //! writing ID3v2.3 it discards frames such as TSOP and damages URL frames. Here, frames
 //! that are not being edited keep their exact bytes, and the audio moves only if the new
 //! tag does not fit in the old one's space.
+//!
+//! Some taggers add a tag after the one already there instead of changing it. Readers take
+//! frames from every tag in such a stack, a later frame replacing an earlier one of its kind.
+//! An edit writes the field into the first tag and takes it out of the later ones, and every
+//! tag keeps its version and the frames not being edited.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -158,11 +163,13 @@ fn text_frame(id: &[u8; 4], values: &[String], version: u8) -> RawFrame {
     }
 }
 
-/// The "/total" part of an existing number frame, so a new number keeps it.
+/// The "/total" part of an existing number frame, so a new number keeps it. Only the first of
+/// the frame's values counts, as only the first is read.
 fn number_total(frames: &[RawFrame], id: &[u8; 4]) -> Option<String> {
     let frame = frames.iter().find(|frame| &frame.id == id)?;
     let text = decode_text(&frame.body)?;
-    let (_, total) = text.split_once('/')?;
+    let first = text.split('\0').next()?;
+    let (_, total) = first.split_once('/')?;
     (!total.trim().is_empty()).then(|| total.trim().to_owned())
 }
 
@@ -289,11 +296,40 @@ struct ParsedTag {
 
 /// Reads the tag at the start of the file. No tag reads as an empty one of version 2.3.
 fn read_tag(file: &mut File) -> Result<ParsedTag, TagWriteError> {
+    read_tag_at(file, 0)
+}
+
+/// Reads the tags at the start of the file, each straight after the one before.
+fn read_stack(file: &mut File) -> Result<Vec<ParsedTag>, TagWriteError> {
+    let mut stack = vec![read_tag(file)?];
+    let mut end = stack_len(&stack);
+    while end > 0 {
+        let next = read_tag_at(file, end as u64)?;
+        if !next.exists {
+            break;
+        }
+        stack.push(next);
+        end = stack_len(&stack);
+    }
+    Ok(stack)
+}
+
+/// How many bytes the tags take, without any padding outside them.
+fn stack_len(stack: &[ParsedTag]) -> usize {
+    stack
+        .iter()
+        .filter(|tag| tag.exists)
+        .map(|tag| HEADER_LEN + tag.size)
+        .sum()
+}
+
+/// Reads the tag starting at `at`. No tag there reads as an empty one of version 2.3.
+fn read_tag_at(file: &mut File, at: u64) -> Result<ParsedTag, TagWriteError> {
     let damaged =
         || TagWriteError::Unsupported("this file's ID3v2 tag could not be read".to_owned());
 
     let mut header = [0; HEADER_LEN];
-    file.seek(SeekFrom::Start(0))?;
+    file.seek(SeekFrom::Start(at))?;
     let has_tag = file.read_exact(&mut header).is_ok() && &header[..3] == b"ID3";
     let (version, flags, size, frames) = if has_tag {
         let (version, flags) = (header[3], header[5]);
@@ -368,55 +404,74 @@ fn is_edited(frame: &RawFrame, fields: &[TagField]) -> bool {
     })
 }
 
-/// The frames an edit of these fields would replace, exactly as they are.
+/// The frames an edit of these fields would replace, exactly as they are, with the tag of the
+/// stack each is in.
 pub fn saved_frames(
     file: &mut File,
     fields: &[TagField],
 ) -> Result<Vec<SavedFrame>, TagWriteError> {
-    Ok(read_tag(file)?
-        .frames
+    Ok(read_stack(file)?
         .into_iter()
-        .filter(|frame| is_edited(frame, fields))
-        .map(|frame| SavedFrame {
-            id: frame.id,
-            flags: frame.flags,
-            body: frame.body,
+        .enumerate()
+        .flat_map(|(index, tag)| {
+            tag.frames
+                .into_iter()
+                .filter(|frame| is_edited(frame, fields))
+                .map(move |frame| SavedFrame {
+                    id: frame.id,
+                    flags: frame.flags,
+                    body: frame.body,
+                    tag: index,
+                })
         })
         .collect())
 }
 
-/// Puts saved frames back in place of whatever now holds these fields.
+/// Puts saved frames back, each in its own tag of the stack, in place of whatever now holds
+/// these fields.
 pub fn restore_file(
     file: &mut File,
     fields: &[TagField],
     saved: &[SavedFrame],
 ) -> Result<(), TagWriteError> {
-    let mut tag = read_tag(file)?;
-    let at = tag
-        .frames
-        .iter()
-        .position(|frame| is_edited(frame, fields))
-        .unwrap_or(tag.frames.len());
-    tag.frames.retain(|frame| !is_edited(frame, fields));
-    let at = at.min(tag.frames.len());
-    tag.frames.splice(
-        at..at,
-        saved.iter().map(|frame| RawFrame {
-            id: frame.id,
-            flags: frame.flags,
-            body: frame.body.clone(),
-        }),
-    );
-    write_tag(file, tag)
+    let mut stack = read_stack(file)?;
+    let last = stack.len() - 1;
+    for (index, tag) in stack.iter_mut().enumerate() {
+        let at = tag
+            .frames
+            .iter()
+            .position(|frame| is_edited(frame, fields))
+            .unwrap_or(tag.frames.len());
+        tag.frames.retain(|frame| !is_edited(frame, fields));
+        let at = at.min(tag.frames.len());
+        tag.frames.splice(
+            at..at,
+            saved
+                .iter()
+                .filter(|frame| frame.tag.min(last) == index)
+                .map(|frame| RawFrame {
+                    id: frame.id,
+                    flags: frame.flags,
+                    body: frame.body.clone(),
+                }),
+        );
+    }
+    write_stack(file, stack)
 }
 
-/// Applies the edits to the tag at the start of the file, making one if there is none.
+/// Applies the edits to the tag at the start of the file, making one if there is none, and
+/// takes the edited fields out of any tags after it.
 pub fn edit_file(file: &mut File, edits: &[FieldEdit]) -> Result<(), TagWriteError> {
-    let mut tag = read_tag(file)?;
+    let mut stack = read_stack(file)?;
+    let fields: Vec<TagField> = edits.iter().map(|edit| edit.field).collect();
+    let (first, later) = stack.split_first_mut().expect("a stack has a first tag");
     for edit in edits {
-        apply_edit(&mut tag.frames, edit, tag.version);
+        apply_edit(&mut first.frames, edit, first.version);
     }
-    write_tag(file, tag)
+    for tag in later {
+        tag.frames.retain(|frame| !is_edited(frame, &fields));
+    }
+    write_stack(file, stack)
 }
 
 /// The description that names a TXXX or COMM frame, which can hold several of them.
@@ -473,45 +528,49 @@ pub fn copy_tag(
             keep(&id, frame_description(frame).as_deref())
         })
         .collect();
-    write_tag(target, to)?;
+    write_stack(target, vec![to])?;
     Ok(true)
 }
 
-fn write_tag(file: &mut File, tag: ParsedTag) -> Result<(), TagWriteError> {
-    let ParsedTag {
-        exists: has_tag,
-        version,
-        flags,
-        size: mut old_size,
-        frames,
-    } = tag;
+/// Writes the tags in place of those read. Padding goes in the first tag, and the later ones
+/// are only as long as their frames: programs looking for the audio skip the first tag and
+/// then search only so far. The audio moves only if the tags no longer fit in the space the
+/// old ones had.
+fn write_stack(file: &mut File, stack: Vec<ParsedTag>) -> Result<(), TagWriteError> {
+    let has_tag = stack[0].exists;
+    let mut old_total = stack_len(&stack);
     if has_tag {
-        old_size += zeros_after(file, (HEADER_LEN + old_size) as u64)? as usize;
+        old_total += zeros_after(file, old_total as u64)? as usize;
     }
-    let body = serialize(&frames, version);
-    let old_total = if has_tag { HEADER_LEN + old_size } else { 0 };
-    // Unsynchronization and the extended header are dropped. Both are optional, and the
-    // frames are written out in the clear.
-    let new_flags = flags & !(FLAG_EXTENDED | if version == 3 { FLAG_UNSYNC } else { 0 });
-    let fits = has_tag && body.len() <= old_size;
-    let new_size = if fits {
-        old_size
-    } else {
-        body.len() + NEW_PADDING
+    let bodies: Vec<Vec<u8>> = stack
+        .iter()
+        .map(|tag| serialize(&tag.frames, tag.version))
+        .collect();
+    let later: usize = bodies[1..].iter().map(|body| HEADER_LEN + body.len()).sum();
+    let room = old_total.checked_sub(HEADER_LEN + later);
+    let first_size = match room {
+        Some(room) if has_tag && bodies[0].len() <= room => room,
+        _ => bodies[0].len() + NEW_PADDING,
     };
-    if !fits {
-        let by = (HEADER_LEN + new_size - old_total) as u64;
-        shift_forward(file, old_total as u64, by)?;
+    let mut bytes = Vec::with_capacity(HEADER_LEN + first_size + later);
+    for (index, (tag, body)) in stack.into_iter().zip(bodies).enumerate() {
+        // Unsynchronization and the extended header are dropped. Both are optional, and the
+        // frames are written out in the clear.
+        let unsync = if tag.version == 3 { FLAG_UNSYNC } else { 0 };
+        let flags = tag.flags & !(FLAG_EXTENDED | unsync);
+        let size = if index == 0 { first_size } else { body.len() };
+        let start = bytes.len();
+        bytes.extend_from_slice(b"ID3");
+        bytes.extend([tag.version, 0, flags]);
+        bytes.extend(write_synchsafe(size));
+        bytes.extend_from_slice(&body);
+        bytes.resize(start + HEADER_LEN + size, 0);
     }
-
-    let mut tag = Vec::with_capacity(HEADER_LEN + new_size);
-    tag.extend_from_slice(b"ID3");
-    tag.extend([version, 0, new_flags]);
-    tag.extend(write_synchsafe(new_size));
-    tag.extend_from_slice(&body);
-    tag.resize(HEADER_LEN + new_size, 0);
+    if bytes.len() > old_total {
+        shift_forward(file, old_total as u64, (bytes.len() - old_total) as u64)?;
+    }
     file.seek(SeekFrom::Start(0))?;
-    file.write_all(&tag)?;
+    file.write_all(&bytes)?;
     Ok(())
 }
 
@@ -623,6 +682,18 @@ mod tests {
             3,
         );
         assert_eq!(frames[0].body, b"\x007/12");
+
+        // A second value after the first is not part of the total.
+        let mut frames = vec![frame(b"TRCK", b"\x005/8\x005\x00")];
+        apply_edit(
+            &mut frames,
+            &FieldEdit {
+                field: TagField::TrackNumber,
+                values: values(&["7"]),
+            },
+            3,
+        );
+        assert_eq!(frames[0].body, b"\x007/8");
     }
 
     #[test]

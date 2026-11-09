@@ -27,6 +27,13 @@ pub struct SavedFrame {
     pub id: [u8; 4],
     pub flags: [u8; 2],
     pub body: Vec<u8>,
+    /// Which tag the frame was in, where a file has several one after another.
+    #[serde(default, skip_serializing_if = "is_first")]
+    pub tag: usize,
+}
+
+fn is_first(tag: &usize) -> bool {
+    *tag == 0
 }
 
 /// The ID3v1 fields being edited. The others stay empty here.

@@ -118,15 +118,20 @@ fn read_at<const N: usize, R: Read + Seek>(
 
 /// The length of an ID3v2 tag at the start of the file, or zero.
 fn id3v2_len<R: Read + Seek>(reader: &mut R, size: u64) -> io::Result<u64> {
-    let header = read_at::<10, R>(reader, 0, size)?;
-    if &header[..3] != b"ID3" {
-        return Ok(0);
+    // Some taggers add a tag straight after the one already there, so there may be several.
+    let mut len = 0;
+    while len + 10 <= size {
+        let header = read_at::<10, R>(reader, len, size)?;
+        if &header[..3] != b"ID3" {
+            break;
+        }
+        let body = header[6..10]
+            .iter()
+            .fold(0_u64, |total, byte| (total << 7) | u64::from(byte & 0x7f));
+        let footer = if header[5] & 0x10 != 0 { 10 } else { 0 };
+        len = (len + 10 + body + footer).min(size);
     }
-    let body = header[6..10]
-        .iter()
-        .fold(0_u64, |total, byte| (total << 7) | u64::from(byte & 0x7f));
-    let footer = if header[5] & 0x10 != 0 { 10 } else { 0 };
-    Ok((10 + body + footer).min(size))
+    Ok(len)
 }
 
 /// Where the tags at the end of a file begin: APE and ID3v1, in either order.
