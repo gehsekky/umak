@@ -7,6 +7,7 @@ import type { ImportPreview } from "../api/generated/ImportPreview";
 import type { ImportReport } from "../api/generated/ImportReport";
 import type { LibraryRoot } from "../api/generated/LibraryRoot";
 import type { Playlist } from "../api/generated/Playlist";
+import { describeReport, needsAttention } from "../convert/options";
 import { describeEdit } from "../tags/plan";
 
 export type View =
@@ -19,10 +20,13 @@ export type View =
   | { kind: "tagReview"; id: string }
   | { kind: "tagEdits" }
   | { kind: "duplicates" }
-  | { kind: "smartEditor"; id: string | null };
+  | { kind: "smartEditor"; id: string | null }
+  | { kind: "conversions" };
 
-/** A background job reading the library: a scan, or the scan inside an import. */
-export type ScanState = { id: string; kind: string; done: number; total: number };
+/** A running background job and how far it has got. */
+export type JobState = { id: string; kind: string; done: number; total: number };
+/** A job using the library: a scan, an import or a tag edit. */
+export type ScanState = JobState;
 
 const QUEUE_OPEN_KEY = "umak.queueOpen";
 /** Below this width the queue covers the main view, so it starts closed. */
@@ -44,6 +48,10 @@ class AppState {
   roots = $state.raw<LibraryRoot[]>([]);
   playlists = $state.raw<Playlist[]>([]);
   scan = $state<ScanState | null>(null);
+  /** The conversion batch running beside library jobs. */
+  conversion = $state<JobState | null>(null);
+  /** The tracks the conversion dialog is open for. */
+  convertTracks = $state.raw<string[] | null>(null);
   notice = $state<{ text: string; error: boolean } | null>(null);
   creatingPlaylist = $state(false);
   importPreview = $state.raw<ImportPreview | null>(null);
@@ -58,6 +66,7 @@ class AppState {
   libraryVersion = $state(0);
   playlistsVersion = $state(0);
   tagEditsVersion = $state(0);
+  conversionsVersion = $state(0);
   /** A previewed batch not yet written or discarded. */
   waitingEdit = $state<string | null>(null);
   /** The batch being written, to report on when its job ends. */
@@ -155,6 +164,20 @@ class AppState {
     }
   }
 
+  private async finishConversion(id: string): Promise<void> {
+    this.conversion = null;
+    this.conversionsVersion++;
+    const batch = await call("convert.get", { jobId: id });
+    if (batch.status === "failed") {
+      this.fail(`The conversion failed: ${batch.error ?? "unknown error"}`);
+      return;
+    }
+    const verb = batch.status === "canceled" ? "Conversion canceled" : "Conversion finished";
+    const text = `${verb}: ${describeReport(batch.report)}`;
+    if (needsAttention(batch.report)) this.fail(text);
+    else this.notify(text);
+  }
+
   private handle(event: CoreEvent): void {
     switch (event.type) {
       case "libraryRootsChanged":
@@ -171,11 +194,15 @@ class AppState {
       case "tagEditsChanged":
         this.tagEditsVersion++;
         break;
-      case "jobProgress":
-        this.scan = { id: event.id, kind: event.kind, done: event.done, total: event.total };
+      case "jobProgress": {
+        const job = { id: event.id, kind: event.kind, done: event.done, total: event.total };
+        if (event.kind === "convert") this.conversion = job;
+        else this.scan = job;
         break;
+      }
       case "jobFinished":
-        if (event.kind === "scan") void this.finishScan(event.id);
+        if (event.kind === "convert") void this.finishConversion(event.id);
+        else if (event.kind === "scan") void this.finishScan(event.id);
         else if (event.kind === "import") void this.finishImport(event.id);
         else void this.finishTagJob(event.id);
         break;
@@ -186,15 +213,12 @@ class AppState {
   async start(): Promise<() => void> {
     const stop = await onCoreEvent((event) => this.handle(event));
     await Promise.all([this.loadRoots(), this.loadPlaylists()]);
-    // A scan may already be running, for example after the window reloads.
-    const running = (await call("jobs.list", {})).jobs.find((job) => job.status === "running");
-    if (running) {
-      this.scan = {
-        id: running.id,
-        kind: running.kind,
-        done: running.done,
-        total: running.total ?? 0,
-      };
+    // Jobs may already be running, for example after the window reloads.
+    const running = (await call("jobs.list", {})).jobs.filter((job) => job.status === "running");
+    for (const job of running) {
+      const state = { id: job.id, kind: job.kind, done: job.done, total: job.total ?? 0 };
+      if (job.kind === "convert") this.conversion = state;
+      else this.scan = state;
     }
     return stop;
   }

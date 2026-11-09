@@ -1,6 +1,6 @@
 <script lang="ts">
   import { actionLabel, runAction } from "../actions/registry";
-  import { app } from "../state/app.svelte";
+  import { app, type JobState } from "../state/app.svelte";
 
   const NOTICE_MS = 8000;
 
@@ -19,25 +19,40 @@
     tagWrite: "Writing tags",
   };
 
-  const percent = $derived(
-    app.scan && app.scan.total > 0 ? Math.floor((app.scan.done * 100) / app.scan.total) : 0,
-  );
+  function percent(job: JobState): number {
+    return job.total > 0 ? Math.floor((job.done * 100) / job.total) : 0;
+  }
 </script>
 
 <div class="bar" role="status">
   {#if app.scan}
-    <span>
+    <span class="job">
       {JOB_LABELS[app.scan.kind]}:
       {app.scan.done.toLocaleString()} of {app.scan.total.toLocaleString()} files
     </span>
-    <span class="meter" aria-hidden="true"><span class="fill" style:width="{percent}%"></span></span>
+    <span class="meter" aria-hidden="true">
+      <span class="fill" style:width="{percent(app.scan)}%"></span>
+    </span>
     <button onclick={() => runAction("library.cancelScan")}>
       {actionLabel("library.cancelScan")}
     </button>
-  {:else if app.notice}
-    <span class:error={app.notice.error}>{app.notice.text}</span>
+  {/if}
+  {#if app.conversion}
+    {@const conversion = app.conversion}
+    <button class="job" title="Show conversions" onclick={() => runAction("nav.conversions")}>
+      Converting: {conversion.done.toLocaleString()} of {conversion.total.toLocaleString()} files
+    </button>
+    <span class="meter" aria-hidden="true">
+      <span class="fill" style:width="{percent(conversion)}%"></span>
+    </span>
+    <button onclick={() => runAction("convert.cancel", { jobId: conversion.id })}>
+      {actionLabel("convert.cancel")}
+    </button>
+  {/if}
+  {#if app.notice && !(app.scan && app.conversion)}
+    <span class="notice" class:error={app.notice.error}>{app.notice.text}</span>
     <button class="dismiss" aria-label="Dismiss" onclick={() => (app.notice = null)}>×</button>
-  {:else}
+  {:else if !app.scan && !app.conversion}
     <span>&nbsp;</span>
   {/if}
 </div>
@@ -55,6 +70,21 @@
 
   .error {
     color: var(--color-danger);
+  }
+
+  .job {
+    flex: none;
+  }
+
+  .notice {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .meter + button {
+    margin-right: var(--space-md);
   }
 
   .meter {

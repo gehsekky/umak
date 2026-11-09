@@ -186,6 +186,9 @@
       <button onclick={async () => runAction("tags.edit", { trackIds: await selectedTrackIds() })}>
         {actionLabel("tags.edit")}
       </button>
+      <button onclick={async () => runAction("convert.open", { trackIds: await selectedTrackIds() })}>
+        {actionLabel("convert.open")}
+      </button>
       {#if !smart}
         <button onclick={() => move(-1)}>Move up</button>
         <button onclick={() => move(1)}>Move down</button>

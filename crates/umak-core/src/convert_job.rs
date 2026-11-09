@@ -560,6 +560,12 @@ fn add_to_library(
 #[serde(rename_all = "camelCase")]
 pub struct ConversionInfo {
     pub job_id: String,
+    /// The job's status: running, completed, canceled or failed.
+    pub status: String,
+    /// Why the job itself failed. Files that failed are counted in the report instead.
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub finished_at: Option<i64>,
     pub settings: ConvertSettings,
     pub folder: String,
     pub threads: u32,
@@ -567,29 +573,57 @@ pub struct ConversionInfo {
     pub report: ConvertReport,
 }
 
-pub fn info(conn: &Connection, job_id: &str) -> Result<ConversionInfo, ApiError> {
-    let request = load_request(conn, job_id)?;
-    let job: i64 = conn.query_row(
-        "SELECT id FROM jobs WHERE public_id = ?1",
-        [job_id],
-        |row| row.get(0),
-    )?;
-    // A finished batch keeps its library result in its job.
-    let payload: Option<String> =
-        conn.query_row("SELECT payload FROM jobs WHERE id = ?1", [job], |row| {
-            row.get(0)
-        })?;
+const INFO_COLUMNS: &str = "j.id, j.public_id, j.status, j.error, j.created_at, j.finished_at,
+     j.payload, c.settings, c.folder, c.threads, c.add_to_library
+     FROM conversions c JOIN jobs j ON j.id = c.job_id";
+
+fn read_info(conn: &Connection, row: &rusqlite::Row) -> Result<ConversionInfo, ApiError> {
+    let job: i64 = row.get(0)?;
+    // A finished batch keeps its report, with the library result, in its job.
+    let payload: Option<String> = row.get(6)?;
     let report = payload
         .and_then(|text| serde_json::from_str(&text).ok())
         .map_or_else(|| counts(conn, job), Ok)?;
+    let settings: String = row.get(7)?;
     Ok(ConversionInfo {
-        job_id: job_id.to_owned(),
-        settings: request.settings,
-        folder: request.folder,
-        threads: request.threads.unwrap_or(1),
-        add_to_library: request.add_to_library,
+        job_id: row.get(1)?,
+        status: row.get(2)?,
+        error: row.get(3)?,
+        created_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        settings: serde_json::from_str(&settings)
+            .map_err(|error| ApiError::new(ErrorCode::Internal, error.to_string()))?,
+        folder: row.get(8)?,
+        threads: row.get(9)?,
+        add_to_library: row.get(10)?,
         report,
     })
+}
+
+pub fn info(conn: &Connection, job_id: &str) -> Result<ConversionInfo, ApiError> {
+    let mut statement =
+        conn.prepare_cached(&format!("SELECT {INFO_COLUMNS} WHERE j.public_id = ?1"))?;
+    let mut rows = statement.query([job_id])?;
+    match rows.next()? {
+        Some(row) => read_info(conn, row),
+        None => Err(ApiError::new(
+            ErrorCode::NotFound,
+            format!("no conversion job {job_id}"),
+        )),
+    }
+}
+
+/// The most recent batches, newest first.
+pub fn list(conn: &Connection, limit: u32) -> Result<Vec<ConversionInfo>, ApiError> {
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT {INFO_COLUMNS} ORDER BY j.created_at DESC, j.id DESC LIMIT ?1"
+    ))?;
+    let mut rows = statement.query([limit])?;
+    let mut conversions = Vec::new();
+    while let Some(row) = rows.next()? {
+        conversions.push(read_info(conn, row)?);
+    }
+    Ok(conversions)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]

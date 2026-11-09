@@ -1,6 +1,7 @@
 // Every UI action lives here with an ID, a label and a handler, so buttons, shortcuts
 // and later the command palette and context menus all run the same thing.
 
+import type { ConvertSettings } from "../api/generated/ConvertSettings";
 import type { ReplayGainMode } from "../api/generated/ReplayGainMode";
 import type { SmartRule } from "../api/generated/SmartRule";
 
@@ -15,6 +16,7 @@ export type ActionMap = {
   "nav.tagReview": { id: string };
   "nav.duplicates": void;
   "nav.smartEditor": { id: string | null };
+  "nav.conversions": void;
   "library.addFolder": void;
   "library.rescan": void;
   "library.cancelScan": void;
@@ -24,6 +26,16 @@ export type ActionMap = {
   "library.chooseImport": void;
   "library.startImport": { path: string; roots: { id: string; path: string | null }[] };
   "tracks.rate": { trackIds: string[]; rating: number | null };
+  "convert.open": { trackIds: string[] };
+  "convert.start": {
+    trackIds: string[];
+    settings: ConvertSettings;
+    folder: string;
+    threads: number | null;
+    addToLibrary: boolean;
+  };
+  "convert.retry": { jobId: string };
+  "convert.cancel": { jobId: string };
   "tags.edit": { trackIds: string[] };
   "tags.preview": void;
   "tags.write": { id: string };

@@ -285,6 +285,7 @@ commands![
     StartConversion,
     RetryConversion,
     GetConversion,
+    ListConversions,
     GetConversionFiles,
     GetDuplicates,
     SetTrackRating,
@@ -698,6 +699,32 @@ impl Command for GetConversion {
 
     fn run(self, core: &Core) -> Result<ConversionInfo, ApiError> {
         core.db.read(|conn| convert_job::info(conn, &self.job_id))
+    }
+}
+
+/// The most recent conversion batches, newest first.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListConversions {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversionList {
+    pub conversions: Vec<ConversionInfo>,
+}
+
+/// How many batches the jobs panel lists.
+const LISTED_CONVERSIONS: u32 = 100;
+
+impl Command for ListConversions {
+    const NAME: &'static str = "convert.list";
+    type Output = ConversionList;
+
+    fn run(self, core: &Core) -> Result<ConversionList, ApiError> {
+        let conversions = core
+            .db
+            .read(|conn| convert_job::list(conn, LISTED_CONVERSIONS))?;
+        Ok(ConversionList { conversions })
     }
 }
 

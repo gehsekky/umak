@@ -13,6 +13,7 @@ export type TokenName =
   | "color-hover"
   | "color-selected"
   | "color-danger"
+  | "color-backdrop"
   | "font-body"
   | "font-size-small"
   | "font-size-body"

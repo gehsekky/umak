@@ -224,6 +224,8 @@ fn a_batch_converts_every_file_and_adds_them_to_the_library_as_a_new_root() {
     assert_eq!(info["settings"]["codec"], "mp3");
     assert_eq!(info["threads"], 2);
     assert_eq!(info["addToLibrary"], true);
+    assert_eq!(info["status"], "completed");
+    assert_eq!(info["report"]["converted"], 4);
 
     // Converting again into the same folder leaves the files already there alone. The new
     // root's own tracks are in the batch too, and would go where they already are.
@@ -244,6 +246,17 @@ fn a_batch_converts_every_file_and_adds_them_to_the_library_as_a_new_root() {
     assert_eq!(report["converted"], 0);
     assert_eq!(report["exists"], 8);
     assert!(report["addedToLibrary"].is_null());
+
+    // The jobs panel lists both batches, newest first.
+    let list = fixture.call("convert.list", json!({}));
+    let listed: Vec<&str> = list["conversions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|conversion| conversion["jobId"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, [again.as_str(), id.as_str()]);
+    assert_eq!(list["conversions"][0]["report"]["exists"], 8);
 }
 
 #[test]

@@ -12,6 +12,7 @@
     "color-hover": "#22262c",
     "color-selected": "#233650",
     "color-danger": "#f28b82",
+    "color-backdrop": "rgba(0, 0, 0, 0.55)",
     "font-body": "system-ui, sans-serif",
     "font-size-small": "12px",
     "font-size-body": "14px",

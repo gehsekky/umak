@@ -147,6 +147,9 @@
     <button onclick={() => runAction("tags.edit", { trackIds: [...selection.keys] as string[] })}>
       {actionLabel("tags.edit")}
     </button>
+    <button onclick={() => runAction("convert.open", { trackIds: [...selection.keys] as string[] })}>
+      {actionLabel("convert.open")}
+    </button>
     <select
       bind:value={addTarget}
       onchange={addSelection}
@@ -161,7 +164,7 @@
       {/each}
     </select>
   {:else}
-    <span class="count selected">Select tracks to play them, queue them or add them to a playlist.</span>
+    <span class="count selected">Select tracks to play them, queue them, edit them or convert them.</span>
   {/if}
 </div>
 

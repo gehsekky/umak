@@ -5,4 +5,12 @@ import type { ConvertSettings } from "./ConvertSettings";
 /**
  * A batch's request and how its files stand.
  */
-export type ConversionInfo = { jobId: string, settings: ConvertSettings, folder: string, threads: number, addToLibrary: boolean, report: ConvertReport, };
+export type ConversionInfo = { jobId: string, 
+/**
+ * The job's status: running, completed, canceled or failed.
+ */
+status: string, 
+/**
+ * Why the job itself failed. Files that failed are counted in the report instead.
+ */
+error: string | null, createdAt: number, finishedAt: number | null, settings: ConvertSettings, folder: string, threads: number, addToLibrary: boolean, report: ConvertReport, };

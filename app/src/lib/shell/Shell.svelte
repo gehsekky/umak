@@ -22,6 +22,8 @@
 
   function keydown(event: KeyboardEvent): void {
     const name = shortcutName(event);
+    // Keys in an open dialog belong to it.
+    if (event.target instanceof Element && event.target.closest("dialog")) return;
     const tag = event.target instanceof HTMLElement ? event.target.tagName : null;
     if (keyBelongsToElement(name, tag)) return;
     if (runShortcut(name)) event.preventDefault();
@@ -61,6 +63,10 @@
     {/each}
   </footer>
 </div>
+
+{#each viewsIn("overlay") as view (view.id)}
+  <view.component />
+{/each}
 
 <style>
   .shell {

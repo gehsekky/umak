@@ -58,6 +58,18 @@
   </button>
   <button
     class="item"
+    class:active={app.view.kind === "conversions"}
+    onclick={() => runAction("nav.conversions")}
+  >
+    <span>{actionLabel("nav.conversions")}</span>
+    {#if app.conversion}
+      <span class="count">
+        {Math.floor((app.conversion.done * 100) / Math.max(app.conversion.total, 1))}%
+      </span>
+    {/if}
+  </button>
+  <button
+    class="item"
     class:active={app.view.kind === "settings"}
     onclick={() => runAction("nav.settings")}
   >

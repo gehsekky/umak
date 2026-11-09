@@ -3,7 +3,8 @@
 
 import type { Component } from "svelte";
 
-export type Region = "sidebar" | "main" | "queue" | "transport" | "status";
+/** "overlay" holds dialogs, which show themselves over the rest when needed. */
+export type Region = "sidebar" | "main" | "queue" | "transport" | "status" | "overlay";
 
 export type RegisteredView = {
   /** In the main region, the kind of `app.view` this view shows. */

@@ -54,6 +54,43 @@ export function registerAppActions(): void {
     },
   });
   registerAction({
+    id: "nav.conversions",
+    label: "Conversions",
+    run: () => {
+      app.view = { kind: "conversions" };
+    },
+  });
+  registerAction({
+    id: "convert.open",
+    label: "Convert",
+    run: ({ trackIds }) => {
+      app.convertTracks = trackIds;
+    },
+  });
+  registerAction({
+    id: "convert.start",
+    label: "Convert",
+    run: async (request) => {
+      await call("convert.start", request);
+      app.convertTracks = null;
+      app.conversionsVersion++;
+      app.notify(`Converting ${countOf(request.trackIds.length, "track")}`);
+    },
+  });
+  registerAction({
+    id: "convert.retry",
+    label: "Retry",
+    run: async ({ jobId }) => {
+      await call("convert.retry", { jobId });
+      app.conversionsVersion++;
+    },
+  });
+  registerAction({
+    id: "convert.cancel",
+    label: "Cancel",
+    run: ({ jobId }) => call("jobs.cancel", { id: jobId }),
+  });
+  registerAction({
     id: "tracks.rate",
     label: "Rate",
     run: async ({ trackIds, rating }) => {

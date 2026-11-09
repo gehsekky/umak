@@ -3,6 +3,8 @@
   import { registerView } from "./lib/shell/regions";
   import Shell from "./lib/shell/Shell.svelte";
   import FoldersView from "./lib/views/FoldersView.svelte";
+  import ConversionsView from "./lib/views/ConversionsView.svelte";
+  import ConvertDialog from "./lib/views/ConvertDialog.svelte";
   import ImportView from "./lib/views/ImportView.svelte";
   import LibraryView from "./lib/views/LibraryView.svelte";
   import PlayerBar from "./lib/views/PlayerBar.svelte";
@@ -29,9 +31,11 @@
   registerView("main", { id: "tagEdits", component: TagHistoryView });
   registerView("main", { id: "duplicates", component: DuplicatesView });
   registerView("main", { id: "smartEditor", component: SmartEditorView });
+  registerView("main", { id: "conversions", component: ConversionsView });
   registerView("queue", { id: "queue", component: QueueView });
   registerView("transport", { id: "player", component: PlayerBar });
   registerView("status", { id: "status", component: StatusBar });
+  registerView("overlay", { id: "convert", component: ConvertDialog });
 </script>
 
 <Shell />
