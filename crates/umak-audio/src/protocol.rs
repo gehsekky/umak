@@ -128,3 +128,22 @@ pub enum PlayerEvent {
         message: String,
     },
 }
+
+/// What the output sounds like now, for visualizers. Sent at a steady rate while they are
+/// open, and once more when the output falls silent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct VisualFrame {
+    /// Levels in dBFS, in bands spaced evenly in pitch from `VISUAL_LOW_HZ` to
+    /// `VISUAL_HIGH_HZ`. A full-scale sine reads 0, and nothing reads below
+    /// `VISUAL_FLOOR_DB`.
+    pub bands: Vec<f32>,
+    /// The latest samples, the channels mixed to one, oldest first.
+    pub wave: Vec<f32>,
+}
+
+pub const VISUAL_BANDS: usize = 96;
+pub const VISUAL_LOW_HZ: f32 = 20.0;
+pub const VISUAL_HIGH_HZ: f32 = 20_000.0;
+pub const VISUAL_FLOOR_DB: f32 = -100.0;
+pub const VISUAL_WAVE_LEN: usize = 1024;
+pub const VISUAL_FRAME_RATE: u32 = 60;

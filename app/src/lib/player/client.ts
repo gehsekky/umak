@@ -11,6 +11,8 @@ import type { ReplayGainMode } from "../api/generated/ReplayGainMode";
 import type { PlayerStatus } from "../api/generated/PlayerStatus";
 import type { Playlist } from "../api/generated/Playlist";
 import type { PlaylistPage } from "../api/generated/PlaylistPage";
+import type { VisualFrame } from "../api/generated/VisualFrame";
+import { type Unwatch, visualsWatch } from "./visuals";
 
 export type PlayerUpdate =
   | { kind: "status"; status: PlayerStatus }
@@ -53,8 +55,21 @@ export interface PlayerClient {
   deleteEqPreset(name: string): Promise<void>;
   /** How much of the library has ReplayGain tags. */
   gainCoverage(): Promise<GainCoverage>;
+  /** Follows the player. Also stops visual frames a page that has gone left on. */
   subscribe(handler: (update: PlayerUpdate) => void): Promise<() => void>;
+  /** Receives visual frames, at a steady rate while something plays, until stopped. */
+  watchVisuals(handler: (frame: VisualFrame) => void): Promise<Unwatch>;
 }
+
+const visuals = visualsWatch<VisualFrame>(
+  async (enabled) => {
+    await call("player.setVisuals", { enabled });
+  },
+  (handler) =>
+    onCoreEvent((event) => {
+      if (event.type === "visualFrame") handler(event.frame);
+    }),
+);
 
 export const playerClient: PlayerClient = {
   async playTracks(trackIds, startIndex) {
@@ -126,8 +141,8 @@ export const playerClient: PlayerClient = {
   gainCoverage() {
     return call("player.gainCoverage", {});
   },
-  subscribe(handler) {
-    return onCoreEvent((event) => {
+  async subscribe(handler) {
+    const stop = await onCoreEvent((event) => {
       if (event.type === "playerChanged") {
         handler({ kind: "status", status: event.status });
       } else if (event.type === "playerPosition") {
@@ -142,5 +157,10 @@ export const playerClient: PlayerClient = {
         handler({ kind: "error", message: event.message });
       }
     });
+    await visuals.reset();
+    return stop;
+  },
+  watchVisuals(handler) {
+    return visuals.watch(handler);
   },
 };

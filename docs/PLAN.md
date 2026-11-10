@@ -657,6 +657,8 @@ Exit criteria:
 - Media keys and the Windows overlay control playback and show the current track.
 - The installer installs and uninstalls cleanly on a clean Windows machine, and conversion works with the bundled FFmpeg.
 
+Step 1, November 2026: the tap mixes the output to one channel and copies it into a ring buffer, after the equalizer, effects and limiter but before the volume, so visualizers show the music whatever it is played at, muted included. It does nothing while no visualizer watches, and drops samples rather than wait if the ring is full. An analysis thread runs a 4096-point FFT with a Hann window 60 times a second and sends a frame of 96 bands spaced evenly in pitch from 20 Hz to 20 kHz, in dBFS, plus the latest 1,024 samples for an oscilloscope. Silence sends one silent frame and then nothing, so a paused player sends no traffic. Frames are turned on with `player.setVisuals` and reach the UI as `visualFrame` events; the player client counts its watchers, so frames run while any visualizer is open. On Windows the thread waits with a high-resolution sleep, since parking waits in 15.6 ms timer ticks: on the real device frames came 16.6 ms apart at the median and 17.1 ms at the 99th percentile, with no underruns. The allocation test now runs with the tap turned on.
+
 ## Milestones, risks and open questions
 
 Build in six phases, each ending in something usable. The 30k-track test library exists from phase 1, so performance is checked continuously.

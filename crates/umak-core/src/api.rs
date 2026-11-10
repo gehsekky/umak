@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
-use umak_audio::protocol::ReplayGainMode;
+use umak_audio::protocol::{ReplayGainMode, VisualFrame};
 use umak_convert::Ffmpeg;
 
 use crate::convert::{self, ConvertPlan, ConvertPreset, ConvertSettings};
@@ -115,6 +115,11 @@ pub enum CoreEvent {
     },
     PlayerError {
         message: String,
+    },
+    /// What the output sounds like now, at a steady rate while a visualizer is open and
+    /// something plays.
+    VisualFrame {
+        frame: VisualFrame,
     },
     JobProgress {
         id: String,
@@ -263,6 +268,7 @@ commands![
     GetPlayerSettings,
     SetPlayerVolume,
     SetPlayerMuted,
+    SetPlayerVisuals,
     SetPlayerGain,
     GetGainCoverage,
     SetPlayerEq,
@@ -1632,6 +1638,31 @@ impl Command for SetPlayerMuted {
 
     fn run(self, core: &Core) -> Result<PlayerSettings, ApiError> {
         core.player.set_muted(self.muted)
+    }
+}
+
+/// Starts or stops `visualFrame` events. A visualizer turns them on when it opens and off when
+/// it closes. Not saved.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SetPlayerVisuals {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct PlayerVisuals {
+    pub enabled: bool,
+}
+
+impl Command for SetPlayerVisuals {
+    const NAME: &'static str = "player.setVisuals";
+    type Output = PlayerVisuals;
+
+    fn run(self, core: &Core) -> Result<PlayerVisuals, ApiError> {
+        core.player.set_visuals(self.enabled);
+        Ok(PlayerVisuals {
+            enabled: self.enabled,
+        })
     }
 }
 

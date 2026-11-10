@@ -2,5 +2,6 @@
 import type { JobKind } from "./JobKind";
 import type { PlayerSettings } from "./PlayerSettings";
 import type { PlayerStatus } from "./PlayerStatus";
+import type { VisualFrame } from "./VisualFrame";
 
-export type CoreEvent = { "type": "libraryRootsChanged" } | { "type": "libraryChanged" } | { "type": "playlistsChanged" } | { "type": "queueChanged", replaced: boolean, } | { "type": "playerChanged", status: PlayerStatus, } | { "type": "playerSettingsChanged", settings: PlayerSettings, } | { "type": "eqPresetsChanged" } | { "type": "playerPosition", positionMs: number, } | { "type": "playerError", message: string, } | { "type": "jobProgress", id: string, kind: JobKind, done: number, total: number, } | { "type": "tagEditsChanged" } | { "type": "jobFinished", id: string, kind: JobKind, };
+export type CoreEvent = { "type": "libraryRootsChanged" } | { "type": "libraryChanged" } | { "type": "playlistsChanged" } | { "type": "queueChanged", replaced: boolean, } | { "type": "playerChanged", status: PlayerStatus, } | { "type": "playerSettingsChanged", settings: PlayerSettings, } | { "type": "eqPresetsChanged" } | { "type": "playerPosition", positionMs: number, } | { "type": "playerError", message: string, } | { "type": "visualFrame", frame: VisualFrame, } | { "type": "jobProgress", id: string, kind: JobKind, done: number, total: number, } | { "type": "tagEditsChanged" } | { "type": "jobFinished", id: string, kind: JobKind, };

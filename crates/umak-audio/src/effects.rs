@@ -7,8 +7,11 @@ pub trait Effect: Send {
     fn process(&mut self, samples: &mut [f32], channels: usize);
 }
 
-/// Sees the final samples, for visualizers.
+/// Sees the final samples before the volume control, for visualizers.
 pub trait OutputTap: Send {
+    /// Called once with the output's format, before any audio and off the audio thread.
+    fn prepare(&mut self, _sample_rate: u32, _channels: usize) {}
+
     fn on_output(&mut self, samples: &[f32], channels: usize);
 }
 

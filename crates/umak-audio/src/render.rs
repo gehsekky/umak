@@ -251,8 +251,11 @@ pub fn channel(
     sample_rate: u32,
     channels: usize,
     chain: EffectChain,
-    tap: Option<Box<dyn OutputTap>>,
+    mut tap: Option<Box<dyn OutputTap>>,
 ) -> (Feeds, Renderer, Arc<Shared>) {
+    if let Some(tap) = &mut tap {
+        tap.prepare(sample_rate, channels);
+    }
     let (samples, consumer) = RingBuffer::new(capacity);
     let (gains, gain_consumer) = RingBuffer::new(GAIN_QUEUE);
     let shared = Arc::new(Shared::new());
@@ -376,6 +379,12 @@ impl Renderer {
         {
             self.limiter.process(audio, self.channels);
         }
+        silence.fill(0.0);
+        // Before the volume, so visualizers show the music whatever it is played at.
+        if let Some(tap) = &mut self.tap {
+            tap.on_output(output, self.channels);
+        }
+        let (audio, _) = output.split_at_mut(written);
         let volume = f32::from_bits(self.shared.volume_bits.load(Ordering::Relaxed));
         if resuming {
             self.volume.jump_to(volume);
@@ -383,10 +392,6 @@ impl Renderer {
             self.volume.aim_at(volume);
         }
         self.volume.apply(audio, self.channels);
-        silence.fill(0.0);
-        if let Some(tap) = &mut self.tap {
-            tap.on_output(output, self.channels);
-        }
     }
 }
 

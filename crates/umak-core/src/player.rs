@@ -12,7 +12,8 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use umak_audio::protocol::{
-    EQ_BANDS, EQ_FREQUENCIES, PlaybackState, PlayerCommand, PlayerEvent, ReplayGainMode, TrackEntry,
+    EQ_BANDS, EQ_FREQUENCIES, PlaybackState, PlayerCommand, PlayerEvent, ReplayGainMode,
+    TrackEntry, VisualFrame,
 };
 
 use crate::api::{ApiError, CoreEvent, ErrorCode, EventSink};
@@ -299,6 +300,9 @@ fn eq_command(eq: &EqSettings) -> Result<PlayerCommand, ApiError> {
 /// An engine that takes commands. Its events go to the callback it was created with.
 pub trait PlayerBackend: Send {
     fn send(&mut self, command: &PlayerCommand) -> Result<(), String>;
+
+    /// Starts or stops visual frames. A backend without them ignores this.
+    fn set_visuals(&mut self, _enabled: bool) {}
 }
 
 pub type BackendEvents = Arc<dyn Fn(BackendSignal) + Send + Sync>;
@@ -309,6 +313,8 @@ pub enum BackendSignal {
     Event(PlayerEvent),
     /// The engine ended without being asked to.
     Exited,
+    /// What the output sounds like now, while visuals are on.
+    Visuals(VisualFrame),
 }
 
 /// For a core that does not play, such as a headless tool.
@@ -330,6 +336,8 @@ struct Shared {
     saved_position_ms: Mutex<u64>,
     seen_underruns: Mutex<u64>,
     plays: Mutex<PlayTracker>,
+    /// Whether a visualizer is open. Not saved: each opens and closes its own.
+    visuals: AtomicBool,
 }
 
 impl Shared {
@@ -451,6 +459,9 @@ impl Shared {
                 });
             }
             BackendSignal::Event(event) => self.handle_event(event),
+            BackendSignal::Visuals(frame) => {
+                self.events.emit(&CoreEvent::VisualFrame { frame });
+            }
         }
     }
 
@@ -563,6 +574,7 @@ impl Player {
                 saved_position_ms: Mutex::new(0),
                 plays: Mutex::new(PlayTracker::default()),
                 seen_underruns: Mutex::new(0),
+                visuals: AtomicBool::new(false),
             }),
             backend: Mutex::new(None),
             factory: Mutex::new(factory),
@@ -608,6 +620,7 @@ impl Player {
             .and_then(|()| started.send(&eq_command(&settings.eq).map_err(|error| error.message)?))
             .and_then(|()| started.send(command))
             .map_err(Self::failure)?;
+        started.set_visuals(self.shared.visuals.load(Ordering::SeqCst));
         *backend = Some(started);
         Ok(())
     }
@@ -806,6 +819,15 @@ impl Player {
         }
     }
 
+    /// Starts or stops visual frames, for a visualizer opening or closing. They come only
+    /// while something plays, and a later engine starts with them as they were left.
+    pub fn set_visuals(&self, enabled: bool) {
+        self.shared.visuals.store(enabled, Ordering::SeqCst);
+        if let Some(running) = lock(&self.backend).as_mut() {
+            running.set_visuals(enabled);
+        }
+    }
+
     fn settings_changed(&self) -> Result<PlayerSettings, ApiError> {
         let settings = self.settings()?;
         self.shared.events.emit(&CoreEvent::PlayerSettingsChanged {
@@ -995,6 +1017,7 @@ mod tests {
         signal: Arc<StdMutex<Option<BackendEvents>>>,
         starts: Arc<StdMutex<u32>>,
         broken: Arc<StdMutex<bool>>,
+        visuals: Arc<StdMutex<Vec<bool>>>,
     }
 
     struct FakeBackend(FakeEngine);
@@ -1006,6 +1029,10 @@ mod tests {
             }
             self.0.commands.lock().unwrap().push(command.clone());
             Ok(())
+        }
+
+        fn set_visuals(&mut self, enabled: bool) {
+            self.0.visuals.lock().unwrap().push(enabled);
         }
     }
 
@@ -1392,6 +1419,44 @@ mod tests {
             panic!("expected a load, got {commands:?}");
         };
         assert_eq!(*start_ms, 1000);
+    }
+
+    #[test]
+    fn visuals_reach_a_running_engine_and_a_later_one_and_their_frames_go_out() {
+        let fixture = fixture();
+        fixture.player.set_visuals(true);
+        assert_eq!(
+            *fixture.engine.starts.lock().unwrap(),
+            0,
+            "no engine just for visuals"
+        );
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        fixture.player.set_visuals(false);
+        assert_eq!(*fixture.engine.visuals.lock().unwrap(), [true, false]);
+
+        let frame = VisualFrame {
+            bands: vec![-6.0],
+            wave: vec![0.5],
+        };
+        let callback = fixture.engine.signal.lock().unwrap().clone().unwrap();
+        callback(BackendSignal::Visuals(frame.clone()));
+        assert!(
+            fixture
+                .events
+                .0
+                .lock()
+                .unwrap()
+                .contains(&CoreEvent::VisualFrame { frame })
+        );
+
+        callback(BackendSignal::Exited);
+        *fixture.engine.broken.lock().unwrap() = true;
+        fixture.player.control(PlayerAction::Play).unwrap();
+        assert_eq!(*fixture.engine.starts.lock().unwrap(), 2);
+        assert_eq!(
+            *fixture.engine.visuals.lock().unwrap(),
+            [true, false, false]
+        );
     }
 
     fn queue_titles(fixture: &Fixture) -> Vec<String> {

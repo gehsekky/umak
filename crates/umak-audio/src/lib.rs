@@ -6,6 +6,8 @@
 pub mod protocol;
 
 #[cfg(feature = "engine")]
+pub mod analysis;
+#[cfg(feature = "engine")]
 pub mod decoder;
 #[cfg(feature = "engine")]
 mod edit_list;

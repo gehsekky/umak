@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
+use umak_audio::analysis::{self, Visualizer};
 use umak_audio::engine::{ChainParts, Engine};
 use umak_audio::output::{AudioOutput, CpalOutput, NullOutput};
 use umak_audio::protocol::PlayerCommand;
@@ -25,6 +26,8 @@ pub struct EnginePlayer {
     closing: Arc<AtomicBool>,
     /// Holds the gain at zero whatever volume is asked for, for tests of the app.
     muted: bool,
+    /// Dropped after the engine, whose audio thread holds its tap.
+    visualizer: Visualizer,
 }
 
 impl EnginePlayer {
@@ -54,7 +57,16 @@ impl EnginePlayer {
         events: BackendEvents,
     ) -> Self {
         let (sender, receiver) = mpsc::channel();
-        let engine = Engine::spawn(make_output, ChainParts::default(), move |event| {
+        // Frames go straight out from the visualizer's thread, so a slow handler of the
+        // other events cannot hold them up.
+        let visual_events = Arc::clone(&events);
+        let (tap, visualizer) =
+            analysis::visualizer(move |frame| visual_events(BackendSignal::Visuals(frame)));
+        let chain = ChainParts {
+            tap: Some(Box::new(tap)),
+            ..ChainParts::default()
+        };
+        let engine = Engine::spawn(make_output, chain, move |event| {
             let _ = sender.send(event);
         });
         let closing = Arc::new(AtomicBool::new(false));
@@ -72,6 +84,7 @@ impl EnginePlayer {
             engine,
             closing,
             muted: false,
+            visualizer,
         }
     }
 }
@@ -82,6 +95,10 @@ impl PlayerBackend for EnginePlayer {
             return Ok(());
         }
         self.engine.try_send(command.clone())
+    }
+
+    fn set_visuals(&mut self, enabled: bool) {
+        self.visualizer.set_enabled(enabled);
     }
 }
 
@@ -102,7 +119,7 @@ mod tests {
 
     use rusqlite::params;
     use umak_audio::output::OutputFormat;
-    use umak_audio::protocol::{PlaybackState, PlayerEvent, TrackEntry};
+    use umak_audio::protocol::{PlaybackState, PlayerEvent, TrackEntry, VisualFrame};
     use umak_audio::render::Renderer;
 
     use super::*;
@@ -248,7 +265,7 @@ mod tests {
         let events: BackendEvents = Arc::new(move |signal| {
             writer.lock().unwrap().push(match signal {
                 BackendSignal::Event(PlayerEvent::Error { message }) => message,
-                BackendSignal::Event(_) => "event".to_owned(),
+                BackendSignal::Event(_) | BackendSignal::Visuals(_) => "event".to_owned(),
                 BackendSignal::Exited => "exited".to_owned(),
             });
         });
@@ -291,12 +308,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_player_plays_a_library_track_through_the_engine_to_its_end() {
-        let dir = tempfile::tempdir().unwrap();
-        wav(&dir.path().join("tone.wav"));
-        let db = Arc::new(Database::open(dir.path().join("umak.db")).unwrap());
-        let root = dir.path().to_string_lossy().into_owned();
+    /// A library holding one track, `tone`: a second of 440 Hz.
+    fn tone_library(dir: &Path) -> Arc<Database> {
+        wav(&dir.join("tone.wav"));
+        let db = Arc::new(Database::open(dir.join("umak.db")).unwrap());
+        let root = dir.to_string_lossy().into_owned();
         db.write(|conn| {
             conn.execute(
                 "INSERT INTO library_roots (id, public_id, name, path, added_at)
@@ -317,9 +333,11 @@ mod tests {
             Ok::<_, DbError>(())
         })
         .unwrap();
+        db
+    }
 
-        let recording = Recording::default();
-        let player = Player::new(
+    fn null_player(db: Arc<Database>, recording: &Recording) -> Player {
+        Player::new(
             db,
             Arc::new(recording.clone()),
             Box::new(|events| {
@@ -328,7 +346,14 @@ mod tests {
                     events,
                 )))
             }),
-        );
+        )
+    }
+
+    #[test]
+    fn the_player_plays_a_library_track_through_the_engine_to_its_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let recording = Recording::default();
+        let player = null_player(tone_library(dir.path()), &recording);
         player.play_tracks(&["tone".to_owned()], 0).unwrap();
 
         let states = || -> Vec<PlaybackState> {
@@ -355,5 +380,41 @@ mod tests {
             .cloned()
             .collect();
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn frames_of_what_plays_come_while_visuals_are_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let recording = Recording::default();
+        let player = null_player(tone_library(dir.path()), &recording);
+        let frames = || -> Vec<VisualFrame> {
+            recording
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|event| match event {
+                    CoreEvent::VisualFrame { frame } => Some(frame.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        player.set_visuals(true);
+        player.play_tracks(&["tone".to_owned()], 0).unwrap();
+        // The tone is at half scale, so its band reads about 6 dB down.
+        wait_until(
+            || {
+                frames()
+                    .iter()
+                    .any(|frame| frame.bands.iter().any(|band| *band > -10.0))
+            },
+            "a frame showing the tone",
+        );
+
+        player.set_visuals(false);
+        thread::sleep(Duration::from_millis(50));
+        let seen = frames().len();
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(frames().len(), seen, "frames after visuals were turned off");
     }
 }

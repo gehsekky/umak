@@ -4399,6 +4399,7 @@ version = "0.1.0"
 dependencies = [
  "audioadapter-buffers",
  "cpal",
+ "realfft",
  "rtrb",
  "rubato",
  "serde",
