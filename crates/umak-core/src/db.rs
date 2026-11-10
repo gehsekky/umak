@@ -321,6 +321,23 @@ mod tests {
             .unwrap();
     }
 
+    /// A later scrobbler sends plays from the history, so none may vanish before it does.
+    #[test]
+    fn play_history_blocks_deleting_a_track() {
+        let (_dir, mut db) = open_temp();
+        let conn = db.writer();
+        let track = fixture_track(conn);
+        conn.execute(
+            "INSERT INTO play_history (user_id, track_id, played_at) VALUES (?1, ?2, 100)",
+            params![DEFAULT_USER_ID, track],
+        )
+        .unwrap();
+        assert!(
+            conn.execute("DELETE FROM tracks WHERE id = ?1", [track])
+                .is_err()
+        );
+    }
+
     #[test]
     fn playlist_entries_block_deleting_a_track_and_may_repeat_it() {
         let (_dir, mut db) = open_temp();
