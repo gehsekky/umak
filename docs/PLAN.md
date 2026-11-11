@@ -630,7 +630,7 @@ After step 5, November 2026: the tag editor writes to files with stacked ID3v2 t
 
 Phase 4 closed in November 2026 at the owner's go-ahead.
 
-Development uses a locally installed FFmpeg. Shipping needs an LGPL build, chosen and reviewed with the installers in phase 5.
+Development uses a locally installed FFmpeg. Shipping needs an LGPL build, chosen and reviewed with the installer, which waits until the project is further along.
 
 Phase 2 closed in November 2026 at the owner's go-ahead. The listening check in its brief was not separately reported.
 
@@ -644,7 +644,7 @@ Goal: see the music as it plays, control the player from Windows, and install th
 2. Visualizers: a spectrum analyzer and an oscilloscope, as plugins behind a small interface that receives frames and draws to a canvas, docked or full screen.
 3. Waveform seek bar: each track's waveform is computed once in a background job and cached, then drawn in the player bar.
 4. Windows media controls: media keys and the Windows media overlay and lock screen show what is playing and control playback, through SMTC.
-5. Installer: a Windows installer from Tauri's bundler, with an LGPL build of FFmpeg beside the app and its license terms reviewed. Settle the name before any public release.
+5. Installer: a Windows installer from Tauri's bundler, with an LGPL build of FFmpeg beside the app and its license terms reviewed. Settle the name before any public release. Deferred in November 2026 at the owner's choice, until the project is further along; it is no longer part of this phase.
 
 Not in this phase unless asked for: scrobbling, Milkdrop-style presets (Butterchurn), MPRIS on Linux, the command palette and context menus.
 
@@ -655,7 +655,7 @@ Exit criteria:
 - Visualizers run smoothly while open, with no underruns in the health log.
 - A track's waveform appears after it is first computed and comes from the cache after that.
 - Media keys and the Windows overlay control playback and show the current track.
-- The installer installs and uninstalls cleanly on a clean Windows machine, and conversion works with the bundled FFmpeg.
+- Deferred with the installer: it installs and uninstalls cleanly on a clean Windows machine, and conversion works with the bundled FFmpeg.
 
 Step 1, November 2026: the tap mixes the output to one channel and copies it into a ring buffer, after the equalizer, effects and limiter but before the volume, so visualizers show the music whatever it is played at, muted included. It does nothing while no visualizer watches, and drops samples rather than wait if the ring is full. An analysis thread runs a 4096-point FFT with a Hann window 60 times a second and sends a frame of 96 bands spaced evenly in pitch from 20 Hz to 20 kHz, in dBFS, plus the latest 1,024 samples for an oscilloscope. Silence sends one silent frame and then nothing, so a paused player sends no traffic. Frames are turned on with `player.setVisuals` and reach the UI as `visualFrame` events; the player client counts its watchers, so frames run while any visualizer is open. On Windows the thread waits with a high-resolution sleep, since parking waits in 15.6 ms timer ticks: on the real device frames came 16.6 ms apart at the median and 17.1 ms at the 99th percentile, with no underruns. The allocation test now runs with the tap turned on.
 
@@ -673,7 +673,7 @@ Build in six phases, each ending in something usable. The 30k-track test library
 2. **Player:** the in-process engine, gapless playback and ReplayGain, the EQ and limiter, the player bar and queue panel. Exit: play single songs, albums and saved playlists through one list, with gapless joins.
 3. **Tagging and management:** batch tag editing, duplicate finder, smart playlists. Exit: all target tag formats read and write cleanly.
 4. **Conversion:** FFmpeg job queue and presets, built as a reusable service. Exit: batch conversion with tags and art preserved.
-5. **Visualizations and polish:** FFT pipeline, visualizers, OS integration, installers. Scrobbling is deferred; see the phase 5 brief. Exit: see the phase 5 brief.
+5. **Visualizations and polish:** FFT pipeline, visualizers, OS integration. Scrobbling and the installer are deferred; see the phase 5 brief. Exit: see the phase 5 brief.
 6. **Server (later):** OpenSubsonic through axum on top of the existing command layer, auth, streaming, transcoding, and a headless mode for the NAS. Exit: two third-party clients connect and play.
 
 **After the MVP:** a file watcher, so adds, moves, changes and deletes appear with no manual rescan. Network shares can miss change notifications, so network roots would also get a periodic rescan. The scanner already takes a set of changed paths, so a watcher can feed it.
