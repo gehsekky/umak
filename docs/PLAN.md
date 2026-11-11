@@ -692,6 +692,25 @@ Step 4, November 2026: the player bar shows the playing track's own picture besi
 
 Phase 5 closed in November 2026 at the owner's go-ahead, after the owner checked the visualizers in the app. Scrobbling, the installer and the server remain deferred.
 
+**After Phase 5: settings**
+
+Added in November 2026 at the owner's request, on a `settings` branch merged into `main` when the round is done. Goal: make the app as configurable as is useful, with every setting in one place, applied at once, and carried by export and import. Build order:
+
+1. Settings store: the "one typed, versioned settings store" from the extension points. Each setting is declared once in the core with its key, type, default and allowed values; the core checks values, stores them in the `settings` table as JSON, and announces changes with an event. Commands read all settings, set one and reset one or a group to defaults. The player's existing settings move onto it with their stored values kept. The Settings view becomes sections with a search box, each setting showing whether it differs from its default.
+2. Appearance: choose the theme while the app runs; your own themes as JSON token files in a themes folder beside the database, checked against the token list, with a clear message for a bad one; text size and row density as scales on the theme's tokens; and the track list's columns, shown or hidden and in your order.
+3. Keyboard shortcuts: every action in the registry can take a shortcut, or none. Recording a key shows any action that already has it, and saving takes it from that action. Each shortcut, or all of them, can go back to its default.
+4. Playback: the output device, followed when it disappears by falling back to the default with a message; the skip length; how far into a track Previous restarts it instead of going back; when a play counts; the volume step; and whether to resume the queue and position at start, paused.
+5. Library and behavior: the file types a scan reads and the folders it skips; the folder image names art looks for; the leading articles left out when sorting; what double-click and Enter do on a track (play from here, play the album, play next, add to queue); and the view the app opens on.
+
+Not in this round unless asked for: crossfade, shuffle and repeat, which are features rather than settings; settings per user; internal tuning such as buffer, batch and analysis sizes; and syncing settings between machines beyond export and import.
+
+Exit criteria:
+
+- Every setting applies without a restart, except where its description says otherwise, and survives a restart.
+- Export and import carry the settings, and a setting the importing app does not know is kept, not dropped.
+- A bad value from any source, including an edited database or theme file, falls back to the default with a message, never a crash.
+- The existing player settings keep their stored values through the move.
+
 ## Milestones, risks and open questions
 
 Build in six phases, each ending in something usable. The 30k-track test library exists from phase 1, so performance is checked continuously.
