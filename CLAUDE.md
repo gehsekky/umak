@@ -4,7 +4,7 @@ A local-first desktop music library manager, tagger and player, built with Tauri
 
 ## Current phase
 
-Phase 5: Visualizations and polish. See "Phase 5 brief" in `docs/PLAN.md`. Phases 1 to 4 are complete. Work one phase at a time; each ends with the exit criteria under Milestones.
+Phases 1 to 5 are complete. Phase 6, the server, is on hold at the owner's choice, as are scrobbling and the installer; see `docs/PLAN.md`. Work one phase at a time; each ends with the exit criteria under Milestones.
 
 ## Hard rules
 
