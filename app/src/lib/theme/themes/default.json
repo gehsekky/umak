@@ -35,6 +35,9 @@
     "size-waveform": "30px",
     "size-album-tile": "160px",
     "size-album-caption": "44px",
-    "size-album-cover": "200px"
+    "size-album-cover": "200px",
+    "size-player-art": "48px",
+    "size-visual-art": "160px",
+    "size-tag-picture": "120px"
   }
 }

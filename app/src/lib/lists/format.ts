@@ -19,6 +19,11 @@ export function formatTotalTime(ms: number): string {
   return hours > 0 ? `${hours} hr ${minutes % 60} min` : `${minutes} min`;
 }
 
+export function formatSize(bytes: number): string {
+  const megabytes = bytes / (1024 * 1024);
+  return megabytes >= 1 ? `${megabytes.toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
+}
+
 export function countOf(count: number, noun: string): string {
   return `${count.toLocaleString()} ${noun}${count === 1 ? "" : "s"}`;
 }

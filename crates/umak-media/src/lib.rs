@@ -1,13 +1,15 @@
 //! The operating system's media controls: on Windows the media overlay, the lock screen and
 //! the media keys, through the System Media Transport Controls.
 //!
-//! A `MediaSession` follows the core's player events to show what is playing, and turns
-//! presses of the keys and buttons into ordinary core commands, which the app runs. The
-//! controls live on a thread of their own, since they may not be shared between threads.
+//! A `MediaSession` follows the core's player events to show what is playing, with its cover
+//! art, and turns presses of the keys and buttons into ordinary core commands, which the app
+//! runs. The controls live on a thread of their own, since they may not be shared between
+//! threads.
 //!
 //! This crate must never depend on Tauri or UI code.
 
 use std::ffi::c_void;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -30,10 +32,15 @@ const DRIFT_MS: u64 = 1500;
 /// Runs a core command by name with JSON arguments.
 pub type RunCommand = Arc<dyn Fn(&'static str, Value) + Send + Sync>;
 
+/// The picture file to show for a track. The controls keep the last picture they were given,
+/// so a track with no art needs a placeholder. Called again when `artReady` names the track.
+pub type FindCover = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
+
 /// What the controls show. Nothing is shown with no track.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NowPlaying {
     pub state: PlaybackState,
+    pub track_id: String,
     pub title: String,
     pub artist: String,
     pub album: String,
@@ -47,6 +54,7 @@ pub fn now_playing(status: &PlayerStatus) -> Option<NowPlaying> {
     }
     Some(NowPlaying {
         state: status.state,
+        track_id: track.id.clone(),
         title: track.title.clone(),
         artist: track.artist.clone(),
         album: track.album.clone(),
@@ -102,8 +110,21 @@ fn command_for(
     }
 }
 
+/// The URL the controls take for a picture file. On Windows they want the file's own path,
+/// with backslashes.
+fn cover_url(file: &Path) -> String {
+    let path = file.to_string_lossy();
+    if cfg!(windows) {
+        format!("file://{}", path.replace('/', "\\"))
+    } else {
+        format!("file://{path}")
+    }
+}
+
 enum Message {
     Show(Option<NowPlaying>, u64),
+    /// The cover of the track shown may have been found, with where playback is now.
+    Cover(u64),
     Quit,
 }
 
@@ -125,7 +146,11 @@ pub struct MediaSession {
 
 impl MediaSession {
     /// Starts the controls for the window `hwnd`, which Windows needs. Presses go to `run`.
-    pub fn start(hwnd: Option<*mut c_void>, run: RunCommand) -> Result<Self, String> {
+    pub fn start(
+        hwnd: Option<*mut c_void>,
+        run: RunCommand,
+        find_cover: FindCover,
+    ) -> Result<Self, String> {
         let state = Arc::new(Mutex::new(State {
             shown: None,
             position: Position {
@@ -167,7 +192,7 @@ impl MediaSession {
                     return;
                 }
                 let _ = started.send(Ok(()));
-                show(&mut controls, &receiver);
+                show(&mut controls, &receiver, &find_cover);
                 let _ = controls.detach();
             })
             .map_err(|error| error.to_string())?;
@@ -207,6 +232,15 @@ impl MediaSession {
                 .send(Message::Show(state.shown.clone(), position_ms));
         }
     }
+
+    fn art_ready(&self, track_ids: &[String]) {
+        let state = lock(&self.state);
+        if let Some(shown) = &state.shown
+            && track_ids.contains(&shown.track_id)
+        {
+            let _ = self.sender.send(Message::Cover(state.position.now_ms()));
+        }
+    }
 }
 
 impl EventSink for MediaSession {
@@ -216,6 +250,7 @@ impl EventSink for MediaSession {
             CoreEvent::PlayerPosition { position_ms } => {
                 self.moved_to(u64::try_from(*position_ms).unwrap_or(0));
             }
+            CoreEvent::ArtReady { track_ids } => self.art_ready(track_ids),
             _ => {}
         }
     }
@@ -230,45 +265,86 @@ impl Drop for MediaSession {
     }
 }
 
+/// Describes the track, then where playback is, since describing it resets the timeline.
+fn describe(
+    controls: &mut MediaControls,
+    now: &NowPlaying,
+    cover: Option<&Path>,
+    position_ms: u64,
+) -> Result<(), souvlaki::Error> {
+    let cover_url = cover.map(cover_url);
+    // Every field is given, since one left out keeps the last track's value.
+    controls.set_metadata(MediaMetadata {
+        title: Some(&now.title),
+        artist: Some(&now.artist),
+        album: Some(&now.album),
+        cover_url: cover_url.as_deref(),
+        duration: now.duration_ms.map(Duration::from_millis),
+    })?;
+    set_position(controls, now, position_ms)
+}
+
+fn set_position(
+    controls: &mut MediaControls,
+    now: &NowPlaying,
+    position_ms: u64,
+) -> Result<(), souvlaki::Error> {
+    let progress = Some(MediaPosition(Duration::from_millis(position_ms)));
+    controls.set_playback(match now.state {
+        PlaybackState::Playing => MediaPlayback::Playing { progress },
+        _ => MediaPlayback::Paused { progress },
+    })
+}
+
 /// Shows what each message says until told to quit.
-fn show(controls: &mut MediaControls, receiver: &mpsc::Receiver<Message>) {
+fn show(controls: &mut MediaControls, receiver: &mpsc::Receiver<Message>, find_cover: &FindCover) {
     let mut metadata: Option<NowPlaying> = None;
+    let mut cover: Option<PathBuf> = None;
     for message in receiver {
-        let Message::Show(now, position_ms) = message else {
-            return;
-        };
-        let result = match &now {
-            None => controls.set_playback(MediaPlayback::Stopped),
-            Some(now) => {
+        let result = match message {
+            Message::Quit => return,
+            Message::Cover(position_ms) => {
+                let Some(now) = &metadata else { continue };
+                let found = find_cover(&now.track_id);
+                if found == cover {
+                    continue;
+                }
+                cover = found;
+                describe(controls, now, cover.as_deref(), position_ms)
+            }
+            Message::Show(None, _) => {
+                metadata = None;
+                controls.set_playback(MediaPlayback::Stopped)
+            }
+            Message::Show(Some(now), position_ms) => {
                 let same_track = metadata.as_ref().is_some_and(|shown| {
-                    (&shown.title, &shown.artist, &shown.album, shown.duration_ms)
-                        == (&now.title, &now.artist, &now.album, now.duration_ms)
+                    (
+                        &shown.track_id,
+                        &shown.title,
+                        &shown.artist,
+                        &shown.album,
+                        shown.duration_ms,
+                    ) == (
+                        &now.track_id,
+                        &now.title,
+                        &now.artist,
+                        &now.album,
+                        now.duration_ms,
+                    )
                 });
-                let described = if same_track {
-                    Ok(())
+                let result = if same_track {
+                    set_position(controls, &now, position_ms)
                 } else {
-                    // Every field is given, since one left out keeps the last track's value.
-                    controls.set_metadata(MediaMetadata {
-                        title: Some(&now.title),
-                        artist: Some(&now.artist),
-                        album: Some(&now.album),
-                        cover_url: None,
-                        duration: now.duration_ms.map(Duration::from_millis),
-                    })
+                    cover = find_cover(&now.track_id);
+                    describe(controls, &now, cover.as_deref(), position_ms)
                 };
-                let progress = Some(MediaPosition(Duration::from_millis(position_ms)));
-                described.and_then(|()| {
-                    controls.set_playback(match now.state {
-                        PlaybackState::Playing => MediaPlayback::Playing { progress },
-                        _ => MediaPlayback::Paused { progress },
-                    })
-                })
+                metadata = Some(now);
+                result
             }
         };
         if let Err(error) = result {
             eprintln!("failed to update the media controls: {error:?}");
         }
-        metadata = now;
     }
 }
 
@@ -310,6 +386,7 @@ mod tests {
     fn a_track_playing_or_paused_is_shown_and_nothing_else() {
         let shown = now_playing(&status(PlaybackState::Paused, true)).unwrap();
         assert_eq!(shown.title, "Title");
+        assert_eq!(shown.track_id, "t");
         assert_eq!(shown.state, PlaybackState::Paused);
         // The player's duration, from the decoder, before the library's.
         assert_eq!(shown.duration_ms, Some(2000));
@@ -352,6 +429,16 @@ mod tests {
         );
         assert_eq!(command(MediaControlEvent::Raise, true), None);
         assert_eq!(command(MediaControlEvent::SetVolume(0.5), true), None);
+    }
+
+    #[test]
+    fn covers_are_given_as_file_urls() {
+        let url = cover_url(Path::new("C:/data/art/ab/abc-large.jpg"));
+        if cfg!(windows) {
+            assert_eq!(url, "file://C:\\data\\art\\ab\\abc-large.jpg");
+        } else {
+            assert_eq!(url, "file://C:/data/art/ab/abc-large.jpg");
+        }
     }
 
     #[test]

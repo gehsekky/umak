@@ -18,7 +18,7 @@ use umak_audio::protocol::{ReplayGainMode, VisualFrame};
 use umak_convert::Ffmpeg;
 
 use crate::albums::{self, AlbumPage, AlbumSort, AlbumTracks};
-use crate::art::{self, ArtCache, TrackArt};
+use crate::art::{self, ArtCache, ArtSize, FilePicture, TrackArt};
 use crate::convert::{self, ConvertPlan, ConvertPreset, ConvertSettings};
 use crate::convert_job::{self, ConversionInfo, ConvertFilePage, ConvertRequest};
 use crate::db::{Database, DbError, new_public_id};
@@ -226,6 +226,19 @@ impl Core {
         art::image_file(self.art.folder(), name)
     }
 
+    /// The large picture of a track's cover art, for the system's media controls, which take a
+    /// file. Until the art is known, and for a track with none, it is the placeholder; when it
+    /// is being looked for, `artReady` follows. None only if no file could be written.
+    pub fn cover_file(&self, track_id: &str) -> Option<PathBuf> {
+        let folder = self.art.folder();
+        match self.art.get(track_id) {
+            Ok(TrackArt { art: Some(art), .. }) => art::art_file(folder, &art, ArtSize::Large)
+                .filter(|file| file.is_file())
+                .or_else(|| art::placeholder_file(folder)),
+            _ => art::placeholder_file(folder),
+        }
+    }
+
     /// Keeps every track's cover art cached in the background, starting with tracks added
     /// while the app was closed. For the app; tools that only scan leave it off.
     pub fn keep_art_cached(&self) {
@@ -328,6 +341,7 @@ commands![
     SetPlayerVisuals,
     GetTrackWaveform,
     GetTrackArt,
+    GetTrackPictures,
     SetPlayerGain,
     GetGainCoverage,
     SetPlayerEq,
@@ -1829,6 +1843,41 @@ impl Command for GetTrackArt {
     }
 }
 
+/// The pictures in a track's tags, read from the file, for an editor to show. Each is stored
+/// in the art folder, so it is shown through the art URL scheme like cover art.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GetTrackPictures {
+    pub track_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackPictures {
+    pub track_id: String,
+    pub pictures: Vec<FilePicture>,
+}
+
+impl Command for GetTrackPictures {
+    const NAME: &'static str = "tags.pictures";
+    type Output = TrackPictures;
+
+    fn run(self, core: &Core) -> Result<TrackPictures, ApiError> {
+        let Some(path) = core.art.track_path(&self.track_id)? else {
+            return Err(ApiError::new(
+                ErrorCode::NotFound,
+                format!("no track {}", self.track_id),
+            ));
+        };
+        let pictures = art::file_pictures(&path, core.art.folder())
+            .map_err(|message| ApiError::new(ErrorCode::Unavailable, message))?;
+        Ok(TrackPictures {
+            track_id: self.track_id,
+            pictures,
+        })
+    }
+}
+
 /// A track's waveform for the seek bar. If it is not ready this starts computing it, and
 /// `waveformReady` follows.
 #[derive(Debug, Deserialize, TS)]
@@ -2286,6 +2335,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(found, json!({ "requested": 0 }));
+    }
+
+    #[test]
+    fn pictures_and_cover_files_answer_for_tracks_that_are_not_there() {
+        let fixture = fixture();
+        let error = dispatch(
+            &fixture.core,
+            "tags.pictures",
+            json!({ "trackId": "nothing" }),
+        );
+        assert_eq!(error_code(error), ErrorCode::NotFound);
+        let cover = fixture.core.cover_file("nothing").unwrap();
+        assert_eq!(cover.file_name().unwrap(), "placeholder-large.jpg");
     }
 
     #[test]

@@ -2,9 +2,10 @@
   // One album: its cover and details above its tracks, with the track list's actions.
   import { untrack } from "svelte";
   import { actionLabel, runAction } from "../actions/registry";
-  import { artUrl, call } from "../api/client";
+  import { call } from "../api/client";
   import type { AlbumTracks } from "../api/generated/AlbumTracks";
   import type { TrackRow } from "../api/generated/TrackRow";
+  import Cover from "../lists/Cover.svelte";
   import { countOf, formatTotalTime } from "../lists/format";
   import { PagedList, type Source } from "../lists/pagedList.svelte";
   import { Selection } from "../lists/selection.svelte";
@@ -14,7 +15,6 @@
 
   let detail = $state.raw<AlbumTracks | null>(null);
   let error = $state<string | null>(null);
-  let brokenArt = $state(false);
 
   const id = $derived(app.view.kind === "album" ? app.view.id : null);
   const trackIds = $derived(detail?.tracks.map((track) => track.id) ?? []);
@@ -39,7 +39,6 @@
       if (albumId !== id) return;
       detail = found;
       error = null;
-      brokenArt = false;
       list.setSource(source(found.tracks));
       if (found.album.artPending) void call("library.albums.findArt", { ids: [albumId] });
     } catch (failure) {
@@ -87,11 +86,7 @@
   {@const album = detail.album}
   <header>
     <div class="cover">
-      {#if album.art && !brokenArt}
-        <img src={artUrl(album.art, "large")} alt="Cover of {album.title}" onerror={() => (brokenArt = true)} />
-      {:else}
-        <span class="placeholder" aria-hidden="true">♪</span>
-      {/if}
+      <Cover art={album.art} size="large" alt="Cover of {album.title}" />
     </div>
     <div class="info">
       <button class="back" onclick={() => runAction("nav.albums")}>← {actionLabel("nav.albums")}</button>
@@ -148,24 +143,6 @@
     flex: none;
     width: var(--size-album-cover);
     height: var(--size-album-cover);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--color-surface-raised);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius);
-    overflow: hidden;
-  }
-
-  .cover img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-  }
-
-  .placeholder {
-    color: var(--color-text-muted);
-    font-size: var(--font-size-title);
   }
 
   .info {

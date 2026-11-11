@@ -1,6 +1,7 @@
 <script lang="ts">
   // The player bar: what is playing, the transport and seek bar, and the volume.
   import { actionLabel, runAction } from "../actions/registry";
+  import Cover from "../lists/Cover.svelte";
   import { formatDuration } from "../lists/format";
   import StarRating from "../lists/StarRating.svelte";
   import { player } from "../player/state.svelte";
@@ -34,18 +35,23 @@
 <div class="bar">
   <div class="now" data-testid="now-playing">
     {#if track}
-      <!-- Beside the title, so a track starting does not make the bar taller. -->
-      <div class="heading">
-        <div class="title" title={track.title}>{track.title}</div>
-        <StarRating
-          focusable
-          rating={track.rating}
-          label="Rating of {track.title}"
-          onrate={(rating) => runAction("tracks.rate", { trackIds: [track.id], rating })}
-        />
+      <div class="art">
+        <Cover art={player.art?.art ?? null} size="small" alt="Cover of {track.album}" />
       </div>
-      <div class="detail" title="{track.artist} - {track.album}">
-        {track.artist}<span class="album">{" - "}{track.album}</span>
+      <div class="text">
+        <!-- Beside the title, so a track starting does not make the bar taller. -->
+        <div class="heading">
+          <div class="title" title={track.title}>{track.title}</div>
+          <StarRating
+            focusable
+            rating={track.rating}
+            label="Rating of {track.title}"
+            onrate={(rating) => runAction("tracks.rate", { trackIds: [track.id], rating })}
+          />
+        </div>
+        <div class="detail" title="{track.artist} - {track.album}">
+          {track.artist}<span class="album">{" - "}{track.album}</span>
+        </div>
       </div>
     {:else}
       <div class="detail">Nothing playing</div>
@@ -154,6 +160,19 @@
 
   .now {
     grid-area: now;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  .art {
+    flex: none;
+    width: var(--size-player-art);
+    height: var(--size-player-art);
+  }
+
+  .text {
     min-width: 0;
   }
 

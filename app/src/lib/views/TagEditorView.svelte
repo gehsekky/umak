@@ -4,6 +4,7 @@
   import VirtualList from "../lists/VirtualList.svelte";
   import { app } from "../state/app.svelte";
   import { tagDraft as draft } from "../tags/current.svelte";
+  import FilePictures from "../tags/FilePictures.svelte";
   import { clearField, resetField, SHARED_FIELDS, valueProblem } from "../tags/plan";
 
   const tracks = $derived(draft.tracks);
@@ -16,6 +17,11 @@
 
   let start = $state(0);
   let end = $state(0);
+  /** The track whose pictures show: the one last worked on, or else the first. */
+  let pictureTrackId = $state<string | null>(null);
+  const pictureTrack = $derived(
+    tracks.find((track) => track.id === pictureTrackId) ?? tracks[0] ?? null,
+  );
 
   function fileName(path: string | null): string {
     return path?.split("/").pop() ?? "";
@@ -71,58 +77,64 @@
     {/if}
 
     <div class="panes">
-      <form class="shared" aria-label="Fields for all these tracks" onsubmit={(e) => e.preventDefault()}>
-        <h2>{tracks.length === 1 ? "This track" : "All these tracks"}</h2>
-        {#each SHARED_FIELDS as { field, label, list } (field)}
-          {@const state = draft.shared[field]}
-          {#if state}
-            <div class="field" class:changed={state.touched} data-field={field}>
-              <span class="label">{label}</span>
-              <div class="values">
-                {#each state.values as value, index (index)}
-                  <div class="value">
-                    <input
-                      {value}
-                      aria-label={state.values.length > 1 ? `${label} ${index + 1}` : label}
-                      placeholder={placeholder(field)}
-                      class:invalid={valueProblem(field, value) !== null}
-                      oninput={(event) => typeInto(field, index, event.currentTarget.value)}
-                    />
-                    {#if state.values.length > 1}
-                      <button
-                        type="button"
-                        class="small"
-                        aria-label="Remove this {label.toLowerCase()}"
-                        onclick={() => removeValue(field, index)}>×</button
-                      >
-                    {/if}
-                  </div>
-                {/each}
-                {#if valueProblem(field, state.values[0] ?? "")}
-                  <span class="problem">{valueProblem(field, state.values[0])}</span>
-                {/if}
+      <div class="left">
+        <form class="shared" aria-label="Fields for all these tracks" onsubmit={(e) => e.preventDefault()}>
+          <h2>{tracks.length === 1 ? "This track" : "All these tracks"}</h2>
+          {#each SHARED_FIELDS as { field, label, list } (field)}
+            {@const state = draft.shared[field]}
+            {#if state}
+              <div class="field" class:changed={state.touched} data-field={field}>
+                <span class="label">{label}</span>
+                <div class="values">
+                  {#each state.values as value, index (index)}
+                    <div class="value">
+                      <input
+                        {value}
+                        aria-label={state.values.length > 1 ? `${label} ${index + 1}` : label}
+                        placeholder={placeholder(field)}
+                        class:invalid={valueProblem(field, value) !== null}
+                        oninput={(event) => typeInto(field, index, event.currentTarget.value)}
+                      />
+                      {#if state.values.length > 1}
+                        <button
+                          type="button"
+                          class="small"
+                          aria-label="Remove this {label.toLowerCase()}"
+                          onclick={() => removeValue(field, index)}>×</button
+                        >
+                      {/if}
+                    </div>
+                  {/each}
+                  {#if valueProblem(field, state.values[0] ?? "")}
+                    <span class="problem">{valueProblem(field, state.values[0])}</span>
+                  {/if}
+                </div>
+                <div class="tools">
+                  {#if list}
+                    <button
+                      type="button"
+                      class="small"
+                      title="Add another {label.toLowerCase()}"
+                      aria-label="Add another {label.toLowerCase()}"
+                      onclick={() => addValue(field)}>+</button
+                    >
+                  {/if}
+                  {#if state.mixed && !state.cleared}
+                    <button type="button" class="small" onclick={() => clearField(state)}>Clear</button>
+                  {/if}
+                  {#if state.touched}
+                    <button type="button" class="small" onclick={() => resetField(state)}>Reset</button>
+                  {/if}
+                </div>
               </div>
-              <div class="tools">
-                {#if list}
-                  <button
-                    type="button"
-                    class="small"
-                    title="Add another {label.toLowerCase()}"
-                    aria-label="Add another {label.toLowerCase()}"
-                    onclick={() => addValue(field)}>+</button
-                  >
-                {/if}
-                {#if state.mixed && !state.cleared}
-                  <button type="button" class="small" onclick={() => clearField(state)}>Clear</button>
-                {/if}
-                {#if state.touched}
-                  <button type="button" class="small" onclick={() => resetField(state)}>Reset</button>
-                {/if}
-              </div>
-            </div>
-          {/if}
-        {/each}
-      </form>
+            {/if}
+          {/each}
+        </form>
+        <FilePictures trackId={pictureTrack?.id ?? null} name={fileName(pictureTrack?.relPath ?? null)} />
+        {#if tracks.length > 1}
+          <p class="meta">Pictures are shown, not edited. Choose a track's fields to see its own.</p>
+        {/if}
+      </div>
 
       <section class="own" aria-label="Fields for each track">
         <div class="own-heading">
@@ -146,7 +158,12 @@
         <VirtualList bind:start bind:end total={tracks.length} label="Tracks being edited">
           {#snippet row(index)}
             {@const track = tracks[index]}
-            <div class="own-row" class:failed={track.error !== null} title={track.error ?? track.relPath ?? ""}>
+            <div
+              class="own-row"
+              class:failed={track.error !== null}
+              title={track.error ?? track.relPath ?? ""}
+              onfocusin={() => (pictureTrackId = track.id)}
+            >
               <input
                 value={draft.shownValue(track, "trackNumber")}
                 aria-label="Track number of {fileName(track.relPath)}"
@@ -253,7 +270,7 @@
     overflow-y: auto;
   }
 
-  .shared {
+  .left {
     flex: 1 1 22em;
     min-width: 0;
   }

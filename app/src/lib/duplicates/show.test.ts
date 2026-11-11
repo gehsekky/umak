@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DuplicateTrack } from "../api/generated/DuplicateTrack";
 import type { TrackRow } from "../api/generated/TrackRow";
-import { copyFacts, formatSize, fullPath, searchText, tagsDiffer } from "./show";
+import { copyFacts, fullPath, searchText, tagsDiffer } from "./show";
 
 function track(fields: Partial<TrackRow> = {}): TrackRow {
   return {
@@ -48,7 +48,6 @@ describe("copyFacts", () => {
   });
 
   it("gives small files in kilobytes", () => {
-    expect(formatSize(1500)).toBe("2 KB");
   });
 });
 

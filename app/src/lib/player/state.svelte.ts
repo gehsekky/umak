@@ -3,6 +3,7 @@
 import type { EqPresets } from "../api/generated/EqPresets";
 import type { PlayerSettings } from "../api/generated/PlayerSettings";
 import type { PlayerStatus } from "../api/generated/PlayerStatus";
+import type { TrackArt } from "../api/generated/TrackArt";
 import type { TrackWaveform } from "../api/generated/TrackWaveform";
 import { app } from "../state/app.svelte";
 import { playerClient } from "./client";
@@ -15,6 +16,8 @@ class PlayerState {
   positionMs = $state(0);
   /** The waveform of the track playing, once it is known. */
   waveform = $state.raw<TrackWaveform | null>(null);
+  /** The cover art of the track playing, once it is known. */
+  art = $state.raw<TrackArt | null>(null);
   /** Increases when the player playlist changes, so views showing it reload. */
   queueVersion = $state(0);
   /** Increases when it becomes a different list altogether. */
@@ -67,6 +70,22 @@ class PlayerState {
     }
   }
 
+  private async loadArt(trackId: string | null): Promise<void> {
+    if (this.art?.trackId !== trackId) this.art = null;
+    if (trackId === null) return;
+    try {
+      const art = await playerClient.art(trackId);
+      if (this.playingTrackId === trackId) this.art = art;
+    } catch {
+      // A placeholder shows instead.
+    }
+  }
+
+  private trackChanged(): void {
+    void this.loadWaveform(this.playingTrackId);
+    void this.loadArt(this.playingTrackId);
+  }
+
   private async loadEqPresets(): Promise<void> {
     this.eqPresets = await playerClient.eqPresets();
   }
@@ -77,9 +96,12 @@ class PlayerState {
         const before = this.playingTrackId;
         this.status = update.status;
         this.positionMs = update.status.positionMs;
-        if (this.playingTrackId !== before) void this.loadWaveform(this.playingTrackId);
+        if (this.playingTrackId !== before) this.trackChanged();
       } else if (update.kind === "waveform") {
         if (update.trackId === this.playingTrackId) void this.loadWaveform(update.trackId);
+      } else if (update.kind === "art") {
+        const playing = this.playingTrackId;
+        if (playing !== null && update.trackIds.includes(playing)) void this.loadArt(playing);
       } else if (update.kind === "position") {
         this.positionMs = update.positionMs;
       } else if (update.kind === "settings") {
@@ -97,7 +119,7 @@ class PlayerState {
     await this.loadEqPresets();
     this.status = await playerClient.status();
     this.positionMs = this.status.positionMs;
-    void this.loadWaveform(this.playingTrackId);
+    this.trackChanged();
     return stop;
   }
 }

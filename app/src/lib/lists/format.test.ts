@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countOf, formatDuration, formatQuality, formatTotalTime } from "./format";
+import { countOf, formatDuration, formatQuality, formatSize, formatTotalTime } from "./format";
 
 describe("formatting", () => {
   it("formats durations", () => {
@@ -12,6 +12,11 @@ describe("formatting", () => {
   it("formats total times", () => {
     expect(formatTotalTime(90_000)).toBe("2 min");
     expect(formatTotalTime(7_500_000)).toBe("2 hr 5 min");
+  });
+
+  it("formats file sizes", () => {
+    expect(formatSize(1500)).toBe("2 KB");
+    expect(formatSize(5 * 1024 * 1024)).toBe("5.0 MB");
   });
 
   it("counts with the right plural", () => {

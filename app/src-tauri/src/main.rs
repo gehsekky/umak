@@ -46,6 +46,12 @@ fn media_session<R: Runtime>(app: &AppHandle<R>) -> Option<MediaSession> {
     #[cfg(not(windows))]
     let window = None;
     let handle = app.clone();
+    let find_cover = Arc::new(move |track_id: &str| {
+        handle
+            .try_state::<Core>()
+            .and_then(|core| core.cover_file(track_id))
+    });
+    let handle = app.clone();
     let run = Arc::new(move |name: &'static str, args: Value| {
         if let Some(core) = handle.try_state::<Core>()
             && let Err(error) = api::dispatch(&core, name, args)
@@ -56,7 +62,7 @@ fn media_session<R: Runtime>(app: &AppHandle<R>) -> Option<MediaSession> {
             );
         }
     });
-    MediaSession::start(window, run)
+    MediaSession::start(window, run, find_cover)
         .map_err(|error| eprintln!("no media controls: {error}"))
         .ok()
 }

@@ -36,7 +36,10 @@ export type TokenName =
   | "size-waveform"
   | "size-album-tile"
   | "size-album-caption"
-  | "size-album-cover";
+  | "size-album-cover"
+  | "size-player-art"
+  | "size-visual-art"
+  | "size-tag-picture";
 
 export type Theme = {
   name: string;

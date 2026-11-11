@@ -2,6 +2,7 @@
   // The visualizer filling the screen, with what is playing along the bottom. Escape or
   // F leaves it, and the player's shortcuts keep working.
   import { actionLabel, runAction } from "../actions/registry";
+  import Cover from "../lists/Cover.svelte";
   import { setFullScreen } from "../platform/window";
   import { player } from "../player/state.svelte";
   import { app } from "../state/app.svelte";
@@ -45,8 +46,13 @@
     </div>
     {#if track}
       <div class="now">
-        <div class="title">{track.title}</div>
-        <div class="detail">{track.artist} - {track.album}</div>
+        <div class="art">
+          <Cover art={player.art?.art ?? null} size="large" alt="Cover of {track.album}" />
+        </div>
+        <div class="text">
+          <div class="title">{track.title}</div>
+          <div class="detail">{track.artist} - {track.album}</div>
+        </div>
       </div>
     {/if}
   </div>
@@ -100,7 +106,20 @@
     left: var(--space-lg);
     bottom: var(--space-lg);
     max-width: calc(100% - 2 * var(--space-lg));
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-md);
     pointer-events: none;
+  }
+
+  .art {
+    flex: none;
+    width: var(--size-visual-art);
+    height: var(--size-visual-art);
+  }
+
+  .text {
+    min-width: 0;
   }
 
   .title {

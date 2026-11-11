@@ -10,6 +10,7 @@ import type { PlayerSettings } from "../api/generated/PlayerSettings";
 import type { ReplayGainMode } from "../api/generated/ReplayGainMode";
 import type { PlayerStatus } from "../api/generated/PlayerStatus";
 import type { Playlist } from "../api/generated/Playlist";
+import type { TrackArt } from "../api/generated/TrackArt";
 import type { PlaylistPage } from "../api/generated/PlaylistPage";
 import type { TrackWaveform } from "../api/generated/TrackWaveform";
 import type { VisualFrame } from "../api/generated/VisualFrame";
@@ -22,6 +23,7 @@ export type PlayerUpdate =
   | { kind: "settings"; settings: PlayerSettings }
   | { kind: "eqPresets" }
   | { kind: "waveform"; trackId: string }
+  | { kind: "art"; trackIds: string[] }
   | { kind: "error"; message: string };
 
 export interface PlayerClient {
@@ -59,6 +61,8 @@ export interface PlayerClient {
   gainCoverage(): Promise<GainCoverage>;
   /** A track's waveform. If it is pending, a "waveform" update follows when it is not. */
   waveform(trackId: string): Promise<TrackWaveform>;
+  /** A track's cover art. If it is pending, an "art" update naming the track follows. */
+  art(trackId: string): Promise<TrackArt>;
   /** Follows the player. Also stops visual frames a page that has gone left on. */
   subscribe(handler: (update: PlayerUpdate) => void): Promise<() => void>;
   /** Receives visual frames, at a steady rate while something plays, until stopped. */
@@ -148,6 +152,9 @@ export const playerClient: PlayerClient = {
   waveform(trackId) {
     return call("tracks.waveform", { trackId });
   },
+  art(trackId) {
+    return call("tracks.art", { trackId });
+  },
   async subscribe(handler) {
     const stop = await onCoreEvent((event) => {
       if (event.type === "playerChanged") {
@@ -160,6 +167,8 @@ export const playerClient: PlayerClient = {
         handler({ kind: "eqPresets" });
       } else if (event.type === "waveformReady") {
         handler({ kind: "waveform", trackId: event.trackId });
+      } else if (event.type === "artReady") {
+        handler({ kind: "art", trackIds: event.trackIds });
       } else if (event.type === "queueChanged") {
         handler({ kind: "queue", replaced: event.replaced });
       } else if (event.type === "playerError") {

@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use lofty::config::{ParseOptions, ParsingMode};
-use lofty::file::TaggedFileExt;
-use lofty::picture::PictureType;
+use lofty::file::{TaggedFile, TaggedFileExt};
+use lofty::picture::{Picture, PictureType};
 use lofty::probe::Probe;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -122,26 +122,35 @@ impl Source {
     }
 }
 
-/// The picture in a file's tags: the front cover, or the first picture if none is.
-fn embedded_picture(path: &Path) -> Result<Option<Vec<u8>>, String> {
+/// A file's tags with their pictures.
+fn read_tagged(path: &Path) -> Result<TaggedFile, String> {
     let options = ParseOptions::new()
         .read_properties(false)
         .read_cover_art(true)
         .max_junk_bytes(MAX_JUNK_BYTES)
         .parsing_mode(ParsingMode::Relaxed);
     let file = fs::File::open(path).map_err(|error| error.to_string())?;
-    let tagged = Probe::new(BufReader::new(file))
+    Probe::new(BufReader::new(file))
         .options(options)
         .guess_file_type()
         .map_err(|error| error.to_string())?
         .read()
-        .map_err(|error| error.to_string())?;
-    let pictures: Vec<_> = tagged
+        .map_err(|error| error.to_string())
+}
+
+/// Every picture in a file's tags, in the order the tags hold them.
+fn tag_pictures(tagged: &TaggedFile) -> impl Iterator<Item = &Picture> {
+    tagged
         .tags()
         .iter()
         .flat_map(|tag| tag.pictures())
         .filter(|picture| !picture.data().is_empty())
-        .collect();
+}
+
+/// The picture in a file's tags: the front cover, or the first picture if none is.
+fn embedded_picture(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    let tagged = read_tagged(path)?;
+    let pictures: Vec<_> = tag_pictures(&tagged).collect();
     let chosen = pictures
         .iter()
         .find(|picture| picture.pic_type() == PictureType::CoverFront)
@@ -206,6 +215,95 @@ fn store(folder: &Path, bytes: &[u8]) -> Result<String, String> {
         fs::rename(&partial, &file).map_err(|error| error.to_string())?;
     }
     Ok(art)
+}
+
+/// A picture in a file's tags, as an editor shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePicture {
+    /// What the tag says the picture is, such as "Front cover".
+    pub kind: String,
+    pub description: Option<String>,
+    pub mime_type: Option<String>,
+    pub bytes: u32,
+    /// None when the picture cannot be read.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// The picture in the art folder, for the art URL scheme. None when it cannot be read.
+    pub art: Option<String>,
+}
+
+fn picture_kind(kind: PictureType) -> String {
+    match kind {
+        PictureType::Other => "Other",
+        PictureType::Icon => "File icon",
+        PictureType::OtherIcon => "Other file icon",
+        PictureType::CoverFront => "Front cover",
+        PictureType::CoverBack => "Back cover",
+        PictureType::Leaflet => "Leaflet page",
+        PictureType::Media => "Media",
+        PictureType::LeadArtist => "Lead artist",
+        PictureType::Artist => "Artist",
+        PictureType::Conductor => "Conductor",
+        PictureType::Band => "Band",
+        PictureType::Composer => "Composer",
+        PictureType::Lyricist => "Lyricist",
+        PictureType::RecordingLocation => "Recording location",
+        PictureType::DuringRecording => "During recording",
+        PictureType::DuringPerformance => "During performance",
+        PictureType::ScreenCapture => "Screen capture",
+        PictureType::BrightFish => "A bright colored fish",
+        PictureType::Illustration => "Illustration",
+        PictureType::BandLogo => "Band logo",
+        PictureType::PublisherLogo => "Publisher logo",
+        other => return format!("Type {}", other.as_u8()),
+    }
+    .to_owned()
+}
+
+/// The pictures in a file's tags, each stored in the art folder so it can be shown.
+pub fn file_pictures(path: &Path, folder: &Path) -> Result<Vec<FilePicture>, String> {
+    let tagged = read_tagged(path)?;
+    Ok(tag_pictures(&tagged)
+        .map(|picture| {
+            let data = picture.data();
+            let size = image::ImageReader::new(Cursor::new(data))
+                .with_guessed_format()
+                .ok()
+                .and_then(|reader| reader.into_dimensions().ok());
+            FilePicture {
+                kind: picture_kind(picture.pic_type()),
+                description: picture
+                    .description()
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned),
+                mime_type: picture.mime_type().map(|mime| mime.as_str().to_owned()),
+                bytes: u32::try_from(data.len()).unwrap_or(u32::MAX),
+                width: size.map(|(width, _)| width),
+                height: size.map(|(_, height)| height),
+                art: store(folder, data).ok(),
+            }
+        })
+        .collect())
+}
+
+/// A plain picture standing in for art, for places that cannot show nothing instead, such as
+/// the system's media controls, which keep the last picture they were given. Written once.
+pub fn placeholder_file(folder: &Path) -> Option<PathBuf> {
+    let file = folder.join("placeholder-large.jpg");
+    if file.is_file() {
+        return Some(file);
+    }
+    let picture = image::RgbImage::from_pixel(256, 256, image::Rgb([64, 64, 72]));
+    let mut encoded = Vec::new();
+    JpegEncoder::new_with_quality(&mut encoded, JPEG_QUALITY)
+        .encode_image(&picture)
+        .ok()?;
+    fs::create_dir_all(folder).ok()?;
+    let partial = file.with_extension("partial");
+    fs::write(&partial, &encoded).ok()?;
+    fs::rename(&partial, &file).ok()?;
+    Some(file)
 }
 
 /// What a track shows, found and stored.
@@ -387,6 +485,15 @@ impl ArtCache {
 
     pub fn folder(&self) -> &Path {
         &self.shared.folder
+    }
+
+    /// Where a track's file is, if it is in the library.
+    pub fn track_path(&self, track_id: &str) -> Result<Option<PathBuf>, ApiError> {
+        Ok(self
+            .shared
+            .db
+            .read(|conn| lookup(conn, track_id))?
+            .map(|(file, _)| file.path))
     }
 
     /// The track's art if it is known, or else starts looking for it.
@@ -692,6 +799,58 @@ mod tests {
                 source: Source::None,
                 error: None
             }
+        );
+    }
+
+    #[test]
+    fn every_picture_in_a_file_is_listed_and_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let (back, front) = (png(40, 30, 1), png(20, 20, 2));
+        let path = dir.path().join("both.mp3");
+        fs::write(
+            &path,
+            mp3(&[(4, &back), (3, &front), (3, b"not a picture")]),
+        )
+        .unwrap();
+        let folder = dir.path().join("art");
+        let pictures = file_pictures(&path, &folder).unwrap();
+        assert_eq!(pictures.len(), 3);
+        assert_eq!(
+            pictures[0],
+            FilePicture {
+                kind: "Back cover".to_owned(),
+                description: None,
+                mime_type: Some("image/png".to_owned()),
+                bytes: back.len() as u32,
+                width: Some(40),
+                height: Some(30),
+                art: Some(hash_of(&back)),
+            }
+        );
+        assert_eq!(pictures[1].kind, "Front cover");
+        assert!(image_file(&folder, &format!("{}-small", hash_of(&front))).is_some());
+        assert_eq!(
+            (pictures[2].width, pictures[2].art.as_deref()),
+            (None, None)
+        );
+
+        let bare = dir.path().join("bare.mp3");
+        fs::write(&bare, mp3(&[])).unwrap();
+        assert_eq!(file_pictures(&bare, &folder).unwrap(), Vec::new());
+        assert!(file_pictures(&dir.path().join("gone.mp3"), &folder).is_err());
+    }
+
+    #[test]
+    fn the_placeholder_is_written_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = placeholder_file(&dir.path().join("art")).unwrap();
+        let written = fs::metadata(&file).unwrap().modified().unwrap();
+        assert_eq!(image::open(&file).unwrap().width(), 256);
+        assert_eq!(placeholder_file(&dir.path().join("art")).unwrap(), file);
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), written);
+        assert_eq!(
+            image_file(&dir.path().join("art"), "placeholder-large"),
+            None
         );
     }
 

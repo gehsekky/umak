@@ -2,6 +2,7 @@
 
 import type { DuplicateTrack } from "../api/generated/DuplicateTrack";
 import type { TrackRow } from "../api/generated/TrackRow";
+import { formatSize } from "../lists/format";
 
 /** Shown for a track with no artist tag, so it is not something a search can find. */
 const UNKNOWN_ARTIST = "Unknown Artist";
@@ -12,11 +13,6 @@ export function fullPath(root: string | undefined, relPath: string): string {
   const separator = root.includes("\\") ? "\\" : "/";
   const base = root.endsWith(separator) ? root : root + separator;
   return base + relPath.replaceAll("/", separator);
-}
-
-export function formatSize(bytes: number): string {
-  const megabytes = bytes / (1024 * 1024);
-  return megabytes >= 1 ? `${megabytes.toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
 }
 
 export function tagsOf(track: TrackRow): string {
