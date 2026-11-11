@@ -42,7 +42,7 @@ Run from the repository root:
 
 - `cargo test --workspace`: Rust tests.
 - `cargo run -p umak-scan -- <database> [folder]... [--threads N] [--samples N] [--no-scan] [--list N] [--json]`: scan folders into a database and print statistics, including album grouping and tagging problems. Keep test databases outside the repository.
-- `cargo run --release -p umak-scan -- bench <database>`: time queries against the 10 ms target. `rawio <folder>...` times listing and reading with no parsing, and `generate <folder> <count>` writes synthetic tracks. Results so far are in `docs/benchmarks-phase1.md`.
+- `cargo run --release -p umak-scan -- bench <database>`: time queries against the 10 ms target. `rawio <folder>...` times listing and reading with no parsing, `generate <folder> <count>` writes synthetic tracks, and `art <database>` fills the cover art cache beside a database and times it. Results so far are in `docs/benchmarks-phase1.md`.
 - `cargo run -p umak-play -- <file>...`: play files. With no files it takes JSON commands on stdin. `--volume N` sets the gain, `--null-output` makes no sound, and `--check <file>...` decodes files without playing them.
 - `UMAK_JOIN_FILES="a;b;c" cargo test --release -p umak-audio --test engine report_on_real_joins -- --ignored --nocapture`: measure the joins between real files.
 - `cargo run -p umak-convert -- info` shows the FFmpeg found and its encoders; `cargo run -p umak-convert -- <input> <output> <encoding>` converts one file, with encodings such as `flac`, `mp3-v0` or `aac-256`. The converter looks for FFmpeg in `UMAK_FFMPEG`, beside the executable, then on the path. Its tests, and the core's `convert_tags` and `convert_jobs` tests, need FFmpeg installed.

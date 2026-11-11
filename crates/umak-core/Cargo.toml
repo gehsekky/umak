@@ -25,6 +25,7 @@ dunce = "1"
 lofty = "0.25.5"
 unicode-normalization = "0.1.26"
 blake3 = { version = "1.8.7", features = ["pure"] }
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 
 [dev-dependencies]
 tempfile = "3"

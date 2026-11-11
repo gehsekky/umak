@@ -17,6 +17,7 @@ use ts_rs::TS;
 use umak_audio::protocol::{ReplayGainMode, VisualFrame};
 use umak_convert::Ffmpeg;
 
+use crate::art::{ArtCache, TrackArt};
 use crate::convert::{self, ConvertPlan, ConvertPreset, ConvertSettings};
 use crate::convert_job::{self, ConversionInfo, ConvertFilePage, ConvertRequest};
 use crate::db::{Database, DbError, new_public_id};
@@ -122,6 +123,11 @@ pub enum CoreEvent {
     VisualFrame {
         frame: VisualFrame,
     },
+    /// Cover art has been looked for, found or not, for these tracks. `tracks.art` has it.
+    #[serde(rename_all = "camelCase")]
+    ArtReady {
+        track_ids: Vec<String>,
+    },
     /// A waveform asked for is ready, or could not be made. `tracks.waveform` has it.
     #[serde(rename_all = "camelCase")]
     WaveformReady {
@@ -147,6 +153,25 @@ pub trait EventSink: Send + Sync {
     fn emit(&self, event: &CoreEvent);
 }
 
+/// Passes events on, and has the art cache follow changes to the library.
+struct CoreEvents {
+    outside: Arc<dyn EventSink>,
+    art: Arc<ArtCache>,
+}
+
+impl EventSink for CoreEvents {
+    fn emit(&self, event: &CoreEvent) {
+        if let CoreEvent::JobFinished {
+            kind: JobKind::Scan | JobKind::Import | JobKind::TagWrite,
+            ..
+        } = event
+        {
+            self.art.library_changed();
+        }
+        self.outside.emit(event);
+    }
+}
+
 /// The state every command runs against.
 pub struct Core {
     db: Arc<Database>,
@@ -154,6 +179,7 @@ pub struct Core {
     jobs: JobRunner,
     player: Player,
     waveforms: Waveforms,
+    art: Arc<ArtCache>,
     /// Found on first use, and looked for again until it is found.
     ffmpeg: Mutex<Option<Arc<Ffmpeg>>>,
 }
@@ -171,7 +197,12 @@ impl Core {
         backend: BackendFactory,
     ) -> Result<Self, DbError> {
         let db = Arc::new(db);
-        let events: Arc<dyn EventSink> = Arc::from(events);
+        let outside: Arc<dyn EventSink> = Arc::from(events);
+        let art = Arc::new(ArtCache::new(Arc::clone(&db), Arc::clone(&outside)));
+        let events: Arc<dyn EventSink> = Arc::new(CoreEvents {
+            outside,
+            art: Arc::clone(&art),
+        });
         let jobs = JobRunner::new(Arc::clone(&db), Arc::clone(&events))?;
         tagedit::recover_interrupted(&db)?;
         convert_job::recover_interrupted(&db)?;
@@ -183,8 +214,15 @@ impl Core {
             jobs,
             player,
             waveforms,
+            art,
             ffmpeg: Mutex::default(),
         })
+    }
+
+    /// Keeps every track's cover art cached in the background, starting with tracks added
+    /// while the app was closed. For the app; tools that only scan leave it off.
+    pub fn keep_art_cached(&self) {
+        self.art.keep_filled();
     }
 
     fn ffmpeg(&self) -> Result<Arc<Ffmpeg>, ApiError> {
@@ -279,6 +317,7 @@ commands![
     SetPlayerMuted,
     SetPlayerVisuals,
     GetTrackWaveform,
+    GetTrackArt,
     SetPlayerGain,
     GetGainCoverage,
     SetPlayerEq,
@@ -1673,6 +1712,23 @@ impl Command for SetPlayerVisuals {
         Ok(PlayerVisuals {
             enabled: self.enabled,
         })
+    }
+}
+
+/// The cover art a track shows. If it is not known yet this starts looking, and `artReady`
+/// follows.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GetTrackArt {
+    pub track_id: String,
+}
+
+impl Command for GetTrackArt {
+    const NAME: &'static str = "tracks.art";
+    type Output = TrackArt;
+
+    fn run(self, core: &Core) -> Result<TrackArt, ApiError> {
+        core.art.get(&self.track_id)
     }
 }
 

@@ -665,6 +665,25 @@ Step 3, November 2026: a waveform is the whole file decoded once and summed up a
 
 Step 4, November 2026: `umak-media` drives the System Media Transport Controls through the souvlaki crate, which also covers MPRIS on Linux. It follows the core's player events to show the title, artist, album, duration, state and position, and turns presses of the media keys and the overlay's buttons into the same commands the UI runs: play, pause, play or pause by the current state, next, previous, stop and seeking. The controls are told the position only when playback jumps, since they keep time themselves. They run on a thread of their own, and the app shell only hands them the window and runs their commands. Checked on the real system with a release build, its output muted: Windows listed the session, and pressing play, seek, pause and next through Windows' media session API played, moved and paused the player, with the overlay showing each track and position. Cover art is not shown yet, since the library does not extract it.
 
+**Phase 5, continued: cover art and the album grid**
+
+Added in November 2026 at the owner's request, with the server on hold. Goal: show each album's cover in a grid of the library and wherever a track shows. Build order:
+
+1. Art cache: a track's art is the front cover in its tags, or the first picture if none is marked front, or else an image in its folder named `cover`, `folder` or `front`. Each image is resized to a grid thumbnail and a large size and kept on disk under a hash of the image, so an album sharing one cover costs one file; the database records only which image each track uses. An album's cover is that of its first track with one. Art is extracted on demand in the background, newest request first, and a job after each scan fills in the rest. A track's entry stays current while its file's size and time are unchanged.
+2. Serving: a custom URL scheme in the app shell serves cached images by ID and size, so pictures never go through JSON. The server can later serve the same files.
+3. Album grid: a library mode showing a virtualized grid of covers with album, artist and year, sorted and searchable like the track list. An album opens to its tracks, with the track list's actions.
+4. Art where tracks show: the player bar, the full-screen visualizer, the Windows overlay and lock screen, and the tag editor, which shows a file's pictures read-only.
+
+Not in this round unless asked for: editing or embedding pictures, fetching art online, and showing in the grid art that differs between tracks of one album. The player bar still shows a track's own picture.
+
+Exit criteria:
+
+- The whole library's art is cached, timed on the real collection, with no underruns if it runs during playback.
+- The album grid scrolls smoothly across every album.
+- Covers appear in each place in step 4, and albums without art show a placeholder.
+
+Step 1, November 2026: the art cache follows the brief, except that filling it is not a job in the jobs panel but the same background thread as requests, as with waveforms: requests from the screen go first, and between them it works through tracks with no current entry. The app turns this on at start and it runs again after each scan, import or tag write; tools that only scan leave it off, and requests work either way. Pictures are kept at 256 and 1,024 pixels along the longer side, as JPEG, never enlarged, in an `art` folder beside the database, in subfolders by the first two characters of the hash. A damaged picture in the tags falls back to the folder's image, and a file that is missing is answered without storing anything. `tracks.art` returns a track's art or starts looking, and `artReady` lists the tracks done; `umak-scan art <database>` fills the cache and times it. On the real collection, from a fresh scan: 21,387 tracks in 135 seconds, 158 a second, with art in the tags of 21,326 tracks, in the folder of 44 and none for 17. The 1,274 distinct pictures take 183 MB, and 1,282 of the 1,283 albums have art. In 9 albums the tracks carry different pictures.
+
 ## Milestones, risks and open questions
 
 Build in six phases, each ending in something usable. The 30k-track test library exists from phase 1, so performance is checked continuously.

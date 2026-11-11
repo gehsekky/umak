@@ -68,11 +68,9 @@ fn manage_core<R: Runtime>(app: &AppHandle<R>, database: &Path) -> Result<(), Db
         app: app.clone(),
         media: media_session(app),
     };
-    app.manage(Core::with_player(
-        db,
-        Box::new(events),
-        Box::new(EnginePlayer::spawn),
-    )?);
+    let core = Core::with_player(db, Box::new(events), Box::new(EnginePlayer::spawn))?;
+    core.keep_art_cached();
+    app.manage(core);
     Ok(())
 }
 

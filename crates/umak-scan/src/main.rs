@@ -3,12 +3,17 @@
 mod bench;
 mod generate;
 
+use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use umak_core::api::{self, add_root};
+use umak_core::api::{self, CoreEvent, EventSink, add_root};
+use umak_core::art::ArtCache;
 use umak_core::db::{Database, DbError};
 use umak_core::scan::{self, ScanOptions, ScanProgress, ScanReport};
 use umak_core::stats::{self, AlbumNote, LibraryStats};
@@ -23,6 +28,7 @@ Other commands:
   umak-scan rawio <folder>... [--threads N] [--bytes N]
                                               time listing and reading with no parsing
   umak-scan generate <folder> <count>         write synthetic tracks for testing
+  umak-scan art <database>                    fill the cover art cache beside the database
 
   --threads N   worker threads reading files
   --samples N   audio samples per fingerprint; 0 disables move detection
@@ -115,6 +121,72 @@ fn run_bench(mut args: impl Iterator<Item = String>) -> Result<ExitCode, String>
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    })
+}
+
+/// Fills the art cache beside a database and reports how long it took.
+fn run_art(mut args: impl Iterator<Item = String>) -> Result<ExitCode, String> {
+    let database = args.next().ok_or(USAGE)?;
+    let db = Arc::new(Database::open(&database).map_err(|error| error.to_string())?);
+    let done = Arc::new(AtomicU64::new(0));
+    let cache = ArtCache::new(Arc::clone(&db), Arc::new(CountArt(Arc::clone(&done))));
+    let started = Instant::now();
+    cache.keep_filled();
+    let mut reported = 0;
+    while cache.is_busy() {
+        thread::sleep(Duration::from_millis(200));
+        let now = done.load(Ordering::Relaxed);
+        if now >= reported + 1000 {
+            println!("{now} tracks in {:.0} s", started.elapsed().as_secs_f64());
+            reported = now;
+        }
+    }
+    let seconds = started.elapsed().as_secs_f64();
+    let tracks = done.load(Ordering::Relaxed);
+    let count = |sql: &str| -> Result<i64, String> {
+        db.read(|conn| {
+            conn.query_row(sql, [], |row| row.get(0))
+                .map_err(DbError::from)
+        })
+        .map_err(|error| error.to_string())
+    };
+    println!(
+        "{tracks} tracks in {seconds:.1} s, {:.0} a second",
+        tracks as f64 / seconds.max(0.001)
+    );
+    println!(
+        "Art from tags: {}, from folders: {}, none: {}; {} pictures",
+        count("SELECT count(*) FROM track_art WHERE source = 'embedded'")?,
+        count("SELECT count(*) FROM track_art WHERE source = 'folder'")?,
+        count("SELECT count(*) FROM track_art WHERE source = 'none'")?,
+        count("SELECT count(DISTINCT art) FROM track_art")?,
+    );
+    let bytes = folder_bytes(cache.folder());
+    println!("Art folder: {:.1} MB", bytes as f64 / 1e6);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Counts the tracks the art cache reports done.
+struct CountArt(Arc<AtomicU64>);
+
+impl EventSink for CountArt {
+    fn emit(&self, event: &CoreEvent) {
+        if let CoreEvent::ArtReady { track_ids } = event {
+            self.0.fetch_add(track_ids.len() as u64, Ordering::Relaxed);
+        }
+    }
+}
+
+fn folder_bytes(folder: &Path) -> u64 {
+    fs::read_dir(folder).map_or(0, |entries| {
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| match entry.metadata() {
+                Ok(metadata) if metadata.is_dir() => folder_bytes(&entry.path()),
+                Ok(metadata) => metadata.len(),
+                Err(_) => 0,
+            })
+            .sum()
     })
 }
 
@@ -354,6 +426,7 @@ fn main() -> ExitCode {
         Some("bench") => run_bench(args.skip(1)),
         Some("rawio") => run_raw_io(args.skip(1)),
         Some("generate") => run_generate(args.skip(1)),
+        Some("art") => run_art(args.skip(1)),
         _ => run().map(|()| ExitCode::SUCCESS),
     };
     match result {
