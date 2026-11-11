@@ -2,6 +2,7 @@
 //!
 //! This crate must never depend on Tauri or UI code.
 
+pub mod albums;
 pub mod api;
 pub mod art;
 pub mod convert;

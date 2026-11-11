@@ -25,6 +25,20 @@ export function registerAppActions(): void {
     },
   });
   registerAction({
+    id: "nav.albums",
+    label: "Albums",
+    run: () => {
+      app.view = { kind: "albums" };
+    },
+  });
+  registerAction({
+    id: "nav.album",
+    label: "Open album",
+    run: ({ id }) => {
+      app.view = { kind: "album", id };
+    },
+  });
+  registerAction({
     id: "nav.folders",
     label: "Library folders",
     run: () => {
@@ -297,7 +311,8 @@ export function registerAppActions(): void {
     label: "Search",
     shortcut: "ctrl+f",
     run: () => {
-      app.view = { kind: "library" };
+      // The album grid has a search of its own; anywhere else searches the track list.
+      if (app.view.kind !== "albums") app.view = { kind: "library" };
       app.searchFocusRequests++;
     },
   });
@@ -357,6 +372,14 @@ export function registerAppActions(): void {
     id: "player.playTracks",
     label: "Play",
     run: ({ trackIds, startIndex }) => playerClient.playTracks(trackIds, startIndex),
+  });
+  registerAction({
+    id: "albums.play",
+    label: "Play album",
+    run: async ({ id }) => {
+      const { tracks } = await call("library.albums.get", { id });
+      await playerClient.playTracks(tracks.map((track) => track.id), 0);
+    },
   });
   registerAction({
     id: "player.playPlaylist",

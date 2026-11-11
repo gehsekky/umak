@@ -23,6 +23,7 @@ const WORD_SAMPLE_PAGES: u32 = 40;
 const MAX_WORDS: usize = 150;
 const MIN_WORD_LEN: usize = 4;
 const SORTS: &[&str] = &["album", "artist", "title", "added"];
+const ALBUM_SORTS: &[&str] = &["artist", "title", "year"];
 
 struct NoEvents;
 
@@ -80,11 +81,14 @@ fn page_args(query: Option<&str>, sort: &str, descending: bool, offset: u64) -> 
     })
 }
 
-fn timed_page(core: &Core, args: Value) -> Result<(f64, Value), String> {
+fn timed(core: &Core, command: &str, args: Value) -> Result<(f64, Value), String> {
     let started = Instant::now();
-    let page =
-        dispatch(core, "library.tracks.page", args).map_err(|error| error.message.clone())?;
-    Ok((started.elapsed().as_secs_f64() * 1000.0, page))
+    let result = dispatch(core, command, args).map_err(|error| error.message.clone())?;
+    Ok((started.elapsed().as_secs_f64() * 1000.0, result))
+}
+
+fn timed_page(core: &Core, args: Value) -> Result<(f64, Value), String> {
+    timed(core, "library.tracks.page", args)
 }
 
 /// A repeatable sequence of positions spread over the whole list.
@@ -180,6 +184,40 @@ pub fn queries(database: &str) -> Result<QueryReport, String> {
         samples.push(ms);
     }
     timings.push(summarize("search, deep in the results", samples));
+
+    let (_, first) = timed(
+        &core,
+        "library.albums.page",
+        page_args(None, "artist", false, 0),
+    )?;
+    let albums = first["total"].as_u64().unwrap_or(0);
+    let mut album_ids = Vec::new();
+    for sort in ALBUM_SORTS {
+        let mut samples = Vec::with_capacity(LIST_RUNS);
+        for (index, offset) in offsets(albums, LIST_RUNS).enumerate() {
+            let args = page_args(None, sort, index % 2 == 1, offset);
+            let (ms, page) = timed(&core, "library.albums.page", args)?;
+            samples.push(ms);
+            if let Some(id) = page["albums"][0]["id"].as_str() {
+                album_ids.push(id.to_owned());
+            }
+        }
+        timings.push(summarize(
+            &format!("album page, any position, by {sort}"),
+            samples,
+        ));
+    }
+    let mut samples = Vec::with_capacity(typed.len());
+    for text in &typed {
+        let args = page_args(Some(text), "artist", false, 0);
+        samples.push(timed(&core, "library.albums.page", args)?.0);
+    }
+    timings.push(summarize("album search, per keystroke", samples));
+    let mut samples = Vec::with_capacity(album_ids.len());
+    for id in &album_ids {
+        samples.push(timed(&core, "library.albums.get", json!({ "id": id }))?.0);
+    }
+    timings.push(summarize("album with its tracks", samples));
 
     for by in ["audio", "tags"] {
         let mut samples = Vec::with_capacity(LIST_RUNS);

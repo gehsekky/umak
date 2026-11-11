@@ -33,7 +33,10 @@ export type TokenName =
   | "size-sidebar"
   | "size-queue"
   | "size-visual-dock"
-  | "size-waveform";
+  | "size-waveform"
+  | "size-album-tile"
+  | "size-album-caption"
+  | "size-album-cover";
 
 export type Theme = {
   name: string;

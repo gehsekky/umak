@@ -8,6 +8,8 @@ import type { SmartRule } from "../api/generated/SmartRule";
 /** Actions and the arguments they take. */
 export type ActionMap = {
   "nav.library": void;
+  "nav.albums": void;
+  "nav.album": { id: string };
   "nav.folders": void;
   "nav.playlist": { id: string };
   "nav.settings": void;
@@ -54,6 +56,7 @@ export type ActionMap = {
   "playlists.removeItems": { id: string; positions: number[] };
   "playlists.moveItems": { id: string; positions: number[]; before: number | null };
   "player.playTracks": { trackIds: string[]; startIndex: number };
+  "albums.play": { id: string };
   "player.playPlaylist": { id: string; startIndex: number };
   "player.toggle": void;
   "player.stop": void;

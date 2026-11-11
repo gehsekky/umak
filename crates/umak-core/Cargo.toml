@@ -16,7 +16,7 @@ engine = ["umak-audio/engine"]
 serde.workspace = true
 umak-audio.workspace = true
 umak-convert.workspace = true
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["array", "bundled"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 serde_json = "1"

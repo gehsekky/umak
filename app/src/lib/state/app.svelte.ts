@@ -13,6 +13,8 @@ import { loadChoices, saveChoices, type VisualChoices, type VisualPlace } from "
 
 export type View =
   | { kind: "library" }
+  | { kind: "albums" }
+  | { kind: "album"; id: string }
   | { kind: "folders" }
   | { kind: "import" }
   | { kind: "settings" }
@@ -82,6 +84,8 @@ class AppState {
   playlistsVersion = $state(0);
   tagEditsVersion = $state(0);
   conversionsVersion = $state(0);
+  /** Increases when cover art has been found for more tracks. */
+  artVersion = $state(0);
   /** A previewed batch not yet written or discarded. */
   waitingEdit = $state<string | null>(null);
   /** The batch being written, to report on when its job ends. */
@@ -222,6 +226,9 @@ class AppState {
         break;
       case "tagEditsChanged":
         this.tagEditsVersion++;
+        break;
+      case "artReady":
+        this.artVersion++;
         break;
       case "jobProgress": {
         const job = { id: event.id, kind: event.kind, done: event.done, total: event.total };

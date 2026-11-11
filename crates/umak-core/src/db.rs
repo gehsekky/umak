@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use rusqlite::vtab::array;
 use rusqlite::{Connection, OpenFlags};
 
 /// Migrations in order. A database's `user_version` counts how many have run.
@@ -19,6 +20,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0005_conversions.sql"),
     include_str!("../migrations/0006_waveforms.sql"),
     include_str!("../migrations/0007_art.sql"),
+    include_str!("../migrations/0008_album_browse.sql"),
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -100,6 +102,8 @@ impl Database {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         reader.busy_timeout(BUSY_TIMEOUT)?;
+        // Lets a query take a list of values as one parameter, through rarray().
+        array::load_module(&reader)?;
         Ok(reader)
     }
 }
@@ -119,6 +123,7 @@ fn configure_writer(conn: &Connection) -> Result<(), DbError> {
     }
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
+    array::load_module(conn)?;
     Ok(())
 }
 

@@ -7,6 +7,7 @@
   import { countOf } from "../lists/format";
   import { PagedList, type Source } from "../lists/pagedList.svelte";
   import { Selection } from "../lists/selection.svelte";
+  import TrackActions from "../lists/TrackActions.svelte";
   import TrackTable, { type SortState } from "../lists/TrackTable.svelte";
   import { app } from "../state/app.svelte";
 
@@ -15,7 +16,6 @@
   let sort = $state<SortState>(INITIAL_SORT);
   let searchBox = $state<HTMLInputElement>();
   let table = $state<TrackTable<TrackRow>>();
-  let addTarget = $state("");
 
   function source(text: string, order: SortState): Source<TrackRow> {
     return async (offset, limit) => {
@@ -86,20 +86,6 @@
     const startIndex = Math.max(trackIds.indexOf(row.id), 0);
     void runAction("player.playTracks", { trackIds, startIndex });
   }
-
-  function playSelection(): void {
-    void runAction("player.playTracks", {
-      trackIds: [...selection.keys] as string[],
-      startIndex: 0,
-    });
-  }
-
-  async function addSelection(): Promise<void> {
-    if (!addTarget) return;
-    const trackIds = [...selection.keys] as string[];
-    await runAction("playlists.addTracks", { id: addTarget, trackIds });
-    addTarget = "";
-  }
 </script>
 
 <div class="toolbar">
@@ -125,48 +111,10 @@
   <span class="count">{list.ready ? countOf(list.total, "track") : ""}</span>
 </div>
 
-<!-- Always here, so selecting a row cannot shift the list between the two clicks of a
-     double-click, whatever the window's width. -->
-<div class="toolbar actions">
-  {#if selection.size > 0}
-    <span class="count selected">{countOf(selection.size, "track")} selected</span>
-    <button class="primary" onclick={playSelection}>{actionLabel("player.playTracks")}</button>
-    {#if selection.size === 1}
-      <button
-        onclick={() => runAction("player.playAlbum", { trackId: [...selection.keys][0] as string })}
-      >
-        {actionLabel("player.playAlbum")}
-      </button>
-    {/if}
-    <button onclick={() => runAction("queue.playNext", { trackIds: [...selection.keys] as string[] })}>
-      {actionLabel("queue.playNext")}
-    </button>
-    <button onclick={() => runAction("queue.add", { trackIds: [...selection.keys] as string[] })}>
-      {actionLabel("queue.add")}
-    </button>
-    <button onclick={() => runAction("tags.edit", { trackIds: [...selection.keys] as string[] })}>
-      {actionLabel("tags.edit")}
-    </button>
-    <button onclick={() => runAction("convert.open", { trackIds: [...selection.keys] as string[] })}>
-      {actionLabel("convert.open")}
-    </button>
-    <select
-      bind:value={addTarget}
-      onchange={addSelection}
-      aria-label={actionLabel("playlists.addTracks")}
-      disabled={app.manualPlaylists.length === 0}
-    >
-      <option value="">
-        {app.manualPlaylists.length === 0 ? "Create a playlist first" : actionLabel("playlists.addTracks")}
-      </option>
-      {#each app.manualPlaylists as playlist (playlist.id)}
-        <option value={playlist.id}>{playlist.name}</option>
-      {/each}
-    </select>
-  {:else}
-    <span class="count selected">Select tracks to play them, queue them, edit them or convert them.</span>
-  {/if}
-</div>
+<TrackActions
+  trackIds={[...selection.keys] as string[]}
+  hint="Select tracks to play them, queue them, edit them or convert them."
+/>
 
 <TrackTable
   bind:this={table}
@@ -204,32 +152,6 @@
     border-bottom: 1px solid var(--color-border);
   }
 
-  .actions {
-    /* The height with its buttons, so the list stays put with or without them. */
-    min-height: calc(var(--size-row) + var(--space-sm));
-    box-sizing: border-box;
-    padding-block: var(--space-xs);
-    /* Never wraps, which would move the list. Off-screen buttons scroll into view. */
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .actions > button {
-    flex: none;
-  }
-
-  .count.selected {
-    margin-left: 0;
-    margin-right: auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  select {
-    min-width: 0;
-    flex: 0 1 auto;
-  }
-
   .search {
     flex: 1;
     min-width: 0;
@@ -254,8 +176,7 @@
     white-space: nowrap;
   }
 
-  button,
-  select {
+  button {
     padding: var(--space-xs) var(--space-sm);
     background: var(--color-surface-raised);
     color: var(--color-text);
@@ -282,8 +203,7 @@
     color: var(--color-on-accent);
   }
 
-  button:focus-visible,
-  select:focus-visible {
+  button:focus-visible {
     outline: 1px solid var(--color-accent);
     outline-offset: 1px;
   }

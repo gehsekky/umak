@@ -36,6 +36,13 @@
   </button>
   <button
     class="item"
+    class:active={app.view.kind === "albums" || app.view.kind === "album"}
+    onclick={() => runAction("nav.albums")}
+  >
+    <span>{actionLabel("nav.albums")}</span>
+  </button>
+  <button
+    class="item"
     class:active={app.view.kind === "folders"}
     onclick={() => runAction("nav.folders")}
   >

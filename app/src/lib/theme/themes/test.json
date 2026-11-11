@@ -32,6 +32,9 @@
     "size-sidebar": "320px",
     "size-queue": "460px",
     "size-visual-dock": "220px",
-    "size-waveform": "44px"
+    "size-waveform": "44px",
+    "size-album-tile": "220px",
+    "size-album-caption": "56px",
+    "size-album-cover": "280px"
   }
 }

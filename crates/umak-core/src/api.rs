@@ -17,6 +17,7 @@ use ts_rs::TS;
 use umak_audio::protocol::{ReplayGainMode, VisualFrame};
 use umak_convert::Ffmpeg;
 
+use crate::albums::{self, AlbumPage, AlbumSort, AlbumTracks};
 use crate::art::{self, ArtCache, TrackArt};
 use crate::convert::{self, ConvertPlan, ConvertPreset, ConvertSettings};
 use crate::convert_job::{self, ConversionInfo, ConvertFilePage, ConvertRequest};
@@ -296,6 +297,9 @@ commands![
     ListJobs,
     CancelJob,
     GetTrackPage,
+    GetAlbumPage,
+    GetAlbum,
+    FindAlbumArt,
     ListPlaylists,
     CreatePlaylist,
     RenamePlaylist,
@@ -533,6 +537,93 @@ impl Command for GetTrackPage {
                 self.offset,
                 self.limit,
             )?)
+        })
+    }
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetAlbumPage {
+    pub query: Option<String>,
+    pub sort: AlbumSort,
+    pub descending: bool,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Command for GetAlbumPage {
+    const NAME: &'static str = "library.albums.page";
+    type Output = AlbumPage;
+
+    fn run(self, core: &Core) -> Result<AlbumPage, ApiError> {
+        core.db.read(|conn| {
+            Ok(albums::album_page(
+                conn,
+                self.query.as_deref(),
+                self.sort,
+                self.descending,
+                self.offset,
+                self.limit,
+            )?)
+        })
+    }
+}
+
+/// An album with all its tracks.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetAlbum {
+    pub id: String,
+}
+
+impl Command for GetAlbum {
+    const NAME: &'static str = "library.albums.get";
+    type Output = AlbumTracks;
+
+    fn run(self, core: &Core) -> Result<AlbumTracks, ApiError> {
+        core.db
+            .read(|conn| Ok::<_, ApiError>(albums::album_tracks(conn, &self.id)?))?
+            .ok_or_else(|| ApiError::new(ErrorCode::NotFound, format!("no album {}", self.id)))
+    }
+}
+
+/// Starts looking for the covers of albums on screen, before the rest of the cache. For each
+/// album with no cover yet this asks for its next unchecked track, the first album first;
+/// `artReady` follows for each. An album whose track has no picture is still pending, and
+/// asking again moves on to its next track.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct FindAlbumArt {
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct ArtRequests {
+    /// How many tracks were asked for.
+    pub requested: u32,
+}
+
+/// No more albums than a screen could show at once.
+const MAX_ALBUM_ART_REQUESTS: usize = 200;
+
+impl Command for FindAlbumArt {
+    const NAME: &'static str = "library.albums.findArt";
+    type Output = ArtRequests;
+
+    fn run(self, core: &Core) -> Result<ArtRequests, ApiError> {
+        let tracks = core.db.read(|conn| {
+            let mut tracks = Vec::new();
+            for id in self.ids.iter().take(MAX_ALBUM_ART_REQUESTS) {
+                tracks.extend(albums::unchecked_track(conn, id)?);
+            }
+            Ok::<_, ApiError>(tracks)
+        })?;
+        // The newest request is served first, so the first album goes in last.
+        for track in tracks.iter().rev() {
+            core.art.get(track)?;
+        }
+        Ok(ArtRequests {
+            requested: tracks.len() as u32,
         })
     }
 }
@@ -2172,6 +2263,29 @@ mod tests {
         assert_eq!(page["total"], 0);
         let error = dispatch(&fixture.core, "library.tracks.page", args("mood")).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidArgs);
+    }
+
+    #[test]
+    fn album_commands_answer_for_albums_that_are_not_there() {
+        let fixture = fixture();
+        let args = |sort: &str| json!({ "query": null, "sort": sort, "descending": true, "offset": 0, "limit": 10 });
+        let page = dispatch(&fixture.core, "library.albums.page", args("year")).unwrap();
+        assert_eq!(page, json!({ "albums": [], "total": 0 }));
+        let error = dispatch(&fixture.core, "library.albums.page", args("added")).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgs);
+        let error = dispatch(
+            &fixture.core,
+            "library.albums.get",
+            json!({ "id": "nothing" }),
+        );
+        assert_eq!(error_code(error), ErrorCode::NotFound);
+        let found = dispatch(
+            &fixture.core,
+            "library.albums.findArt",
+            json!({ "ids": ["nothing"] }),
+        )
+        .unwrap();
+        assert_eq!(found, json!({ "requested": 0 }));
     }
 
     #[test]
