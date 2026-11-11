@@ -9,6 +9,7 @@ import type { LibraryRoot } from "../api/generated/LibraryRoot";
 import type { Playlist } from "../api/generated/Playlist";
 import { describeReport, needsAttention } from "../convert/options";
 import { describeEdit } from "../tags/plan";
+import { loadChoices, saveChoices, type VisualChoices, type VisualPlace } from "../visuals/choices";
 
 export type View =
   | { kind: "library" }
@@ -29,6 +30,7 @@ export type JobState = { id: string; kind: string; done: number; total: number }
 export type ScanState = JobState;
 
 const QUEUE_OPEN_KEY = "umak.queueOpen";
+const VISUALS_DOCKED_KEY = "umak.visualsDocked";
 /** Below this width the queue covers the main view, so it starts closed. */
 const NARROW_WINDOW = "(max-width: 1100px)";
 
@@ -42,9 +44,22 @@ function initialQueueOpen(): boolean {
   return !window.matchMedia(NARROW_WINDOW).matches;
 }
 
+function initialVisualsDocked(): boolean {
+  try {
+    return localStorage.getItem(VISUALS_DOCKED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 class AppState {
   view = $state<View>({ kind: "library" });
   queueOpen = $state(initialQueueOpen());
+  /** Whether a visualizer shows docked below the main view. */
+  visualsDocked = $state(initialVisualsDocked());
+  /** Whether a visualizer fills the screen. */
+  visualsFull = $state(false);
+  visualChoices = $state<VisualChoices>(loadChoices());
   roots = $state.raw<LibraryRoot[]>([]);
   playlists = $state.raw<Playlist[]>([]);
   scan = $state<ScanState | null>(null);
@@ -86,6 +101,20 @@ class AppState {
     } catch {
       // Remembering this is only a convenience.
     }
+  }
+
+  setVisualsDocked(docked: boolean): void {
+    this.visualsDocked = docked;
+    try {
+      localStorage.setItem(VISUALS_DOCKED_KEY, String(docked));
+    } catch {
+      // Remembering this is only a convenience.
+    }
+  }
+
+  chooseVisual(place: VisualPlace, id: string): void {
+    this.visualChoices = { ...this.visualChoices, [place]: id };
+    saveChoices(this.visualChoices);
   }
 
   notify(text: string): void {

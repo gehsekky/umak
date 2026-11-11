@@ -121,6 +121,18 @@
       onchange={() => (dragVolume = null)}
     />
     <button
+      class:on={app.visualsDocked}
+      title="{actionLabel('visuals.toggleDock')} (V)"
+      aria-label={actionLabel("visuals.toggleDock")}
+      aria-pressed={app.visualsDocked}
+      onclick={() => runAction("visuals.toggleDock")}>〰</button
+    >
+    <button
+      title="{actionLabel('visuals.toggleFull')} (F)"
+      aria-label={actionLabel("visuals.toggleFull")}
+      onclick={() => runAction("visuals.toggleFull")}>⛶</button
+    >
+    <button
       class:on={app.queueOpen}
       title="{actionLabel('queue.togglePanel')} (Ctrl+Q)"
       aria-label={actionLabel("queue.togglePanel")}

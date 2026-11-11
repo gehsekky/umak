@@ -3,8 +3,11 @@
 
 import type { Component } from "svelte";
 
-/** "overlay" holds dialogs, which show themselves over the rest when needed. */
-export type Region = "sidebar" | "main" | "queue" | "transport" | "status" | "overlay";
+/**
+ * "dock" is a strip below the main view, shown when the user docks something there.
+ * "overlay" holds dialogs and full-screen views, which show themselves over the rest.
+ */
+export type Region = "sidebar" | "main" | "dock" | "queue" | "transport" | "status" | "overlay";
 
 export type RegisteredView = {
   /** In the main region, the kind of `app.view` this view shows. */

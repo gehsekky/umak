@@ -7,6 +7,7 @@ import { playerClient } from "../player/client";
 import { player } from "../player/state.svelte";
 import { app } from "../state/app.svelte";
 import { tagDraft } from "../tags/current.svelte";
+import { findVisualizer, nextVisualizer } from "../visuals/plugin";
 import { onActionError, registerAction } from "./registry";
 
 const SKIP_MS = 5000;
@@ -451,6 +452,29 @@ export function registerAppActions(): void {
     },
   });
 
+  registerAction({
+    id: "visuals.toggleDock",
+    label: "Show or hide the docked visualizer",
+    shortcut: "v",
+    run: () => app.setVisualsDocked(!app.visualsDocked),
+  });
+  registerAction({
+    id: "visuals.toggleFull",
+    label: "Full-screen visualizer",
+    shortcut: "f",
+    run: () => {
+      app.visualsFull = !app.visualsFull;
+    },
+  });
+  registerAction({
+    id: "visuals.next",
+    label: "Next visualizer",
+    run: ({ place }) => {
+      const current = findVisualizer(app.visualChoices[place]);
+      const next = current && nextVisualizer(current.id);
+      if (next) app.chooseVisual(place, next.id);
+    },
+  });
   registerAction({
     id: "queue.togglePanel",
     label: "Show or hide the queue",

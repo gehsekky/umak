@@ -45,6 +45,13 @@
       <MainView />
     {/if}
   </main>
+  {#if app.visualsDocked && !app.visualsFull}
+    <section class="dock" aria-label="Visualizer">
+      {#each viewsIn("dock") as view (view.id)}
+        <view.component />
+      {/each}
+    </section>
+  {/if}
   {#if app.queueOpen}
     <aside class="queue" aria-label="Queue">
       {#each viewsIn("queue") as view (view.id)}
@@ -72,9 +79,10 @@
   .shell {
     display: grid;
     grid-template-columns: var(--size-sidebar) minmax(0, 1fr) auto;
-    grid-template-rows: minmax(0, 1fr) auto auto;
+    grid-template-rows: minmax(0, 1fr) auto auto auto;
     grid-template-areas:
       "sidebar main queue"
+      "sidebar dock queue"
       "transport transport transport"
       "status status status";
     height: 100%;
@@ -96,6 +104,14 @@
     min-height: 0;
     /* The page itself never scrolls sideways. */
     overflow: hidden;
+  }
+
+  .dock {
+    grid-area: dock;
+    height: var(--size-visual-dock);
+    border-top: 1px solid var(--color-border);
+    display: flex;
+    min-width: 0;
   }
 
   .queue {

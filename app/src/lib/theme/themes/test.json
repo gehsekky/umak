@@ -12,6 +12,10 @@
     "color-hover": "#ffe29a",
     "color-selected": "#f6b6cf",
     "color-backdrop": "rgba(59, 31, 0, 0.35)",
+    "color-visual-bg": "#3b1f00",
+    "color-visual-fill": "#f6b6cf",
+    "color-visual-peak": "#fff4d6",
+    "color-visual-line": "#ffdc85",
     "color-danger": "#a30000",
     "font-body": "Georgia, serif",
     "font-size-small": "14px",
@@ -24,6 +28,7 @@
     "radius": "14px",
     "size-row": "46px",
     "size-sidebar": "320px",
-    "size-queue": "460px"
+    "size-queue": "460px",
+    "size-visual-dock": "220px"
   }
 }

@@ -18,6 +18,11 @@
   import SmartEditorView from "./lib/views/SmartEditorView.svelte";
   import TagHistoryView from "./lib/views/TagHistoryView.svelte";
   import TagReviewView from "./lib/views/TagReviewView.svelte";
+  import VisualizerDock from "./lib/views/VisualizerDock.svelte";
+  import VisualizerFull from "./lib/views/VisualizerFull.svelte";
+  import { registerVisualizer } from "./lib/visuals/plugin";
+  import { oscilloscopePlugin } from "./lib/visuals/oscilloscope";
+  import { spectrumPlugin } from "./lib/visuals/spectrum";
 
   registerAppActions();
   registerView("sidebar", { id: "navigation", component: Sidebar });
@@ -36,6 +41,10 @@
   registerView("transport", { id: "player", component: PlayerBar });
   registerView("status", { id: "status", component: StatusBar });
   registerView("overlay", { id: "convert", component: ConvertDialog });
+  registerView("dock", { id: "visualizer", component: VisualizerDock });
+  registerView("overlay", { id: "visualizer", component: VisualizerFull });
+  registerVisualizer(spectrumPlugin);
+  registerVisualizer(oscilloscopePlugin);
 </script>
 
 <Shell />

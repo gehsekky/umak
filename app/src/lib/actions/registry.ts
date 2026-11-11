@@ -79,6 +79,9 @@ export type ActionMap = {
   "queue.move": { positions: number[]; before: number | null };
   "queue.clear": void;
   "queue.save": { name: string };
+  "visuals.toggleDock": void;
+  "visuals.toggleFull": void;
+  "visuals.next": { place: "dock" | "full" };
 };
 
 export type ActionId = keyof ActionMap;

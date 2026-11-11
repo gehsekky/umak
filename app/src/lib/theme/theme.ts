@@ -14,6 +14,10 @@ export type TokenName =
   | "color-selected"
   | "color-danger"
   | "color-backdrop"
+  | "color-visual-bg"
+  | "color-visual-fill"
+  | "color-visual-peak"
+  | "color-visual-line"
   | "font-body"
   | "font-size-small"
   | "font-size-body"
@@ -25,7 +29,8 @@ export type TokenName =
   | "radius"
   | "size-row"
   | "size-sidebar"
-  | "size-queue";
+  | "size-queue"
+  | "size-visual-dock";
 
 export type Theme = {
   name: string;
