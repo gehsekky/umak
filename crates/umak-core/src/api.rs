@@ -33,6 +33,7 @@ use crate::smart::{self, SmartRule};
 use crate::tagedit::{self, TagEdit, TagEditItemPage, TagEditPage, TrackEdits, TrackTagValuesList};
 use crate::transfer::{self, ExportSummary, ImportPreview, RootChoice};
 use crate::user_data;
+use crate::waveforms::{TrackWaveform, Waveforms};
 use crate::{AppInfo, app_info};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -121,6 +122,11 @@ pub enum CoreEvent {
     VisualFrame {
         frame: VisualFrame,
     },
+    /// A waveform asked for is ready, or could not be made. `tracks.waveform` has it.
+    #[serde(rename_all = "camelCase")]
+    WaveformReady {
+        track_id: String,
+    },
     JobProgress {
         id: String,
         kind: JobKind,
@@ -147,6 +153,7 @@ pub struct Core {
     events: Arc<dyn EventSink>,
     jobs: JobRunner,
     player: Player,
+    waveforms: Waveforms,
     /// Found on first use, and looked for again until it is found.
     ffmpeg: Mutex<Option<Arc<Ffmpeg>>>,
 }
@@ -169,11 +176,13 @@ impl Core {
         tagedit::recover_interrupted(&db)?;
         convert_job::recover_interrupted(&db)?;
         let player = Player::new(Arc::clone(&db), Arc::clone(&events), backend);
+        let waveforms = Waveforms::new(Arc::clone(&db), Arc::clone(&events));
         Ok(Self {
             db,
             events,
             jobs,
             player,
+            waveforms,
             ffmpeg: Mutex::default(),
         })
     }
@@ -269,6 +278,7 @@ commands![
     SetPlayerVolume,
     SetPlayerMuted,
     SetPlayerVisuals,
+    GetTrackWaveform,
     SetPlayerGain,
     GetGainCoverage,
     SetPlayerEq,
@@ -1663,6 +1673,23 @@ impl Command for SetPlayerVisuals {
         Ok(PlayerVisuals {
             enabled: self.enabled,
         })
+    }
+}
+
+/// A track's waveform for the seek bar. If it is not ready this starts computing it, and
+/// `waveformReady` follows.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GetTrackWaveform {
+    pub track_id: String,
+}
+
+impl Command for GetTrackWaveform {
+    const NAME: &'static str = "tracks.waveform";
+    type Output = TrackWaveform;
+
+    fn run(self, core: &Core) -> Result<TrackWaveform, ApiError> {
+        core.waveforms.get(&self.track_id)
     }
 }
 

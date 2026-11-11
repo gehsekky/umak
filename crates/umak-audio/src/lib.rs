@@ -27,3 +27,5 @@ pub mod render;
 pub mod resample;
 #[cfg(feature = "engine")]
 pub mod source;
+#[cfg(feature = "engine")]
+pub mod waveform;

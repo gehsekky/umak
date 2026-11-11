@@ -3,6 +3,7 @@
 import type { EqPresets } from "../api/generated/EqPresets";
 import type { PlayerSettings } from "../api/generated/PlayerSettings";
 import type { PlayerStatus } from "../api/generated/PlayerStatus";
+import type { TrackWaveform } from "../api/generated/TrackWaveform";
 import { app } from "../state/app.svelte";
 import { playerClient } from "./client";
 import { gainToSlider, latestOnly, sliderToGain } from "./volume";
@@ -12,6 +13,8 @@ class PlayerState {
   settings = $state.raw<PlayerSettings | null>(null);
   eqPresets = $state.raw<EqPresets | null>(null);
   positionMs = $state(0);
+  /** The waveform of the track playing, once it is known. */
+  waveform = $state.raw<TrackWaveform | null>(null);
   /** Increases when the player playlist changes, so views showing it reload. */
   queueVersion = $state(0);
   /** Increases when it becomes a different list altogether. */
@@ -52,6 +55,18 @@ class PlayerState {
     await playerClient.seek(ms);
   }
 
+  private async loadWaveform(trackId: string | null): Promise<void> {
+    if (this.waveform?.trackId !== trackId) this.waveform = null;
+    if (trackId === null) return;
+    try {
+      const waveform = await playerClient.waveform(trackId);
+      // Playback may have moved on while it was asked for.
+      if (this.playingTrackId === trackId) this.waveform = waveform;
+    } catch {
+      // The seek bar works without one.
+    }
+  }
+
   private async loadEqPresets(): Promise<void> {
     this.eqPresets = await playerClient.eqPresets();
   }
@@ -59,8 +74,12 @@ class PlayerState {
   async start(): Promise<() => void> {
     const stop = await playerClient.subscribe((update) => {
       if (update.kind === "status") {
+        const before = this.playingTrackId;
         this.status = update.status;
         this.positionMs = update.status.positionMs;
+        if (this.playingTrackId !== before) void this.loadWaveform(this.playingTrackId);
+      } else if (update.kind === "waveform") {
+        if (update.trackId === this.playingTrackId) void this.loadWaveform(update.trackId);
       } else if (update.kind === "position") {
         this.positionMs = update.positionMs;
       } else if (update.kind === "settings") {
@@ -78,6 +97,7 @@ class PlayerState {
     await this.loadEqPresets();
     this.status = await playerClient.status();
     this.positionMs = this.status.positionMs;
+    void this.loadWaveform(this.playingTrackId);
     return stop;
   }
 }

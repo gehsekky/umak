@@ -4,6 +4,7 @@
   import { formatDuration } from "../lists/format";
   import StarRating from "../lists/StarRating.svelte";
   import { player } from "../player/state.svelte";
+  import WaveformSeek from "../player/WaveformSeek.svelte";
   import { gainToSlider, sliderToGain } from "../player/volume";
   import { app } from "../state/app.svelte";
 
@@ -80,18 +81,15 @@
 
   <div class="position">
     <span class="time">{formatDuration(isActive ? shownPosition : 0)}</span>
-    <input
-      class="seek"
-      type="range"
-      min="0"
-      max={duration}
-      step="100"
-      value={isActive ? shownPosition : 0}
+    <WaveformSeek
+      peaks={isActive ? (player.waveform?.peaks ?? []) : []}
+      levels={isActive ? (player.waveform?.levels ?? []) : []}
+      positionMs={isActive ? shownPosition : 0}
+      durationMs={duration}
       disabled={!isActive || duration === 0}
       title="Shift+Left and Shift+Right skip 5 seconds"
-      aria-label="Position"
-      oninput={(event) => (dragPosition = event.currentTarget.valueAsNumber)}
-      onchange={(event) => finishSeek(event.currentTarget.valueAsNumber)}
+      oninput={(ms) => (dragPosition = ms)}
+      onchange={finishSeek}
     />
     <span class="time">{formatDuration(isActive ? duration : 0)}</span>
   </div>
@@ -264,10 +262,6 @@
     margin: 0;
     accent-color: var(--color-accent);
     min-width: 0;
-  }
-
-  .seek {
-    flex: 1;
   }
 
   .volume {

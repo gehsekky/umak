@@ -21,6 +21,7 @@ pub mod tagedit;
 pub mod tagwrite;
 pub mod transfer;
 pub mod user_data;
+pub mod waveforms;
 
 use serde::Serialize;
 use ts_rs::TS;

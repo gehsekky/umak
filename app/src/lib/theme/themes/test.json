@@ -16,6 +16,8 @@
     "color-visual-fill": "#f6b6cf",
     "color-visual-peak": "#fff4d6",
     "color-visual-line": "#ffdc85",
+    "color-wave": "#c79a3a",
+    "color-wave-played": "#c2185b",
     "color-danger": "#a30000",
     "font-body": "Georgia, serif",
     "font-size-small": "14px",
@@ -29,6 +31,7 @@
     "size-row": "46px",
     "size-sidebar": "320px",
     "size-queue": "460px",
-    "size-visual-dock": "220px"
+    "size-visual-dock": "220px",
+    "size-waveform": "44px"
   }
 }

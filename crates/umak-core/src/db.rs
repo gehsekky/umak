@@ -17,6 +17,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_tag_edits.sql"),
     include_str!("../migrations/0004_duplicates.sql"),
     include_str!("../migrations/0005_conversions.sql"),
+    include_str!("../migrations/0006_waveforms.sql"),
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);

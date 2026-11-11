@@ -18,6 +18,8 @@ export type TokenName =
   | "color-visual-fill"
   | "color-visual-peak"
   | "color-visual-line"
+  | "color-wave"
+  | "color-wave-played"
   | "font-body"
   | "font-size-small"
   | "font-size-body"
@@ -30,7 +32,8 @@ export type TokenName =
   | "size-row"
   | "size-sidebar"
   | "size-queue"
-  | "size-visual-dock";
+  | "size-visual-dock"
+  | "size-waveform";
 
 export type Theme = {
   name: string;

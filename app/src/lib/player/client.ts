@@ -11,6 +11,7 @@ import type { ReplayGainMode } from "../api/generated/ReplayGainMode";
 import type { PlayerStatus } from "../api/generated/PlayerStatus";
 import type { Playlist } from "../api/generated/Playlist";
 import type { PlaylistPage } from "../api/generated/PlaylistPage";
+import type { TrackWaveform } from "../api/generated/TrackWaveform";
 import type { VisualFrame } from "../api/generated/VisualFrame";
 import { type Unwatch, visualsWatch } from "./visuals";
 
@@ -20,6 +21,7 @@ export type PlayerUpdate =
   | { kind: "queue"; replaced: boolean }
   | { kind: "settings"; settings: PlayerSettings }
   | { kind: "eqPresets" }
+  | { kind: "waveform"; trackId: string }
   | { kind: "error"; message: string };
 
 export interface PlayerClient {
@@ -55,6 +57,8 @@ export interface PlayerClient {
   deleteEqPreset(name: string): Promise<void>;
   /** How much of the library has ReplayGain tags. */
   gainCoverage(): Promise<GainCoverage>;
+  /** A track's waveform. If it is pending, a "waveform" update follows when it is not. */
+  waveform(trackId: string): Promise<TrackWaveform>;
   /** Follows the player. Also stops visual frames a page that has gone left on. */
   subscribe(handler: (update: PlayerUpdate) => void): Promise<() => void>;
   /** Receives visual frames, at a steady rate while something plays, until stopped. */
@@ -141,6 +145,9 @@ export const playerClient: PlayerClient = {
   gainCoverage() {
     return call("player.gainCoverage", {});
   },
+  waveform(trackId) {
+    return call("tracks.waveform", { trackId });
+  },
   async subscribe(handler) {
     const stop = await onCoreEvent((event) => {
       if (event.type === "playerChanged") {
@@ -151,6 +158,8 @@ export const playerClient: PlayerClient = {
         handler({ kind: "settings", settings: event.settings });
       } else if (event.type === "eqPresetsChanged") {
         handler({ kind: "eqPresets" });
+      } else if (event.type === "waveformReady") {
+        handler({ kind: "waveform", trackId: event.trackId });
       } else if (event.type === "queueChanged") {
         handler({ kind: "queue", replaced: event.replaced });
       } else if (event.type === "playerError") {
