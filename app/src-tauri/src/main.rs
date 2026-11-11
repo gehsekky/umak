@@ -3,26 +3,56 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use umak_core::api::{self, ApiError, Core, CoreEvent, EventSink};
 use umak_core::db::{Database, DbError};
 use umak_core::player_engine::EnginePlayer;
+use umak_media::MediaSession;
 
 const EVENT_CHANNEL: &str = "umak:event";
 /// Points the app at another data folder, so test runs leave the real database alone.
 const DATA_DIR_VARIABLE: &str = "UMAK_DATA_DIR";
 
-/// Forwards core events to the webview.
-struct TauriEvents<R: Runtime>(AppHandle<R>);
+/// Forwards core events to the webview, and to the system's media controls if there are any.
+struct AppEvents<R: Runtime> {
+    app: AppHandle<R>,
+    media: Option<MediaSession>,
+}
 
-impl<R: Runtime> EventSink for TauriEvents<R> {
+impl<R: Runtime> EventSink for AppEvents<R> {
     fn emit(&self, event: &CoreEvent) {
-        if let Err(error) = self.0.emit(EVENT_CHANNEL, event) {
+        if let Err(error) = self.app.emit(EVENT_CHANNEL, event) {
             eprintln!("failed to emit {event:?}: {error}");
         }
+        if let Some(media) = &self.media {
+            media.emit(event);
+        }
     }
+}
+
+/// The media controls for the main window. Their presses run as commands, like the UI's.
+fn media_session<R: Runtime>(app: &AppHandle<R>) -> Option<MediaSession> {
+    #[cfg(windows)]
+    let window = Some(app.get_webview_window("main")?.hwnd().ok()?.0);
+    #[cfg(not(windows))]
+    let window = None;
+    let handle = app.clone();
+    let run = Arc::new(move |name: &'static str, args: Value| {
+        if let Some(core) = handle.try_state::<Core>()
+            && let Err(error) = api::dispatch(&core, name, args)
+        {
+            eprintln!(
+                "failed to run {name} from the media controls: {}",
+                error.message
+            );
+        }
+    });
+    MediaSession::start(window, run)
+        .map_err(|error| eprintln!("no media controls: {error}"))
+        .ok()
 }
 
 /// The single IPC entry point. It runs off the main thread so a slow command cannot
@@ -34,9 +64,13 @@ fn call(core: State<'_, Core>, name: String, args: Value) -> Result<Value, ApiEr
 
 fn manage_core<R: Runtime>(app: &AppHandle<R>, database: &Path) -> Result<(), DbError> {
     let db = Database::open(database)?;
+    let events = AppEvents {
+        app: app.clone(),
+        media: media_session(app),
+    };
     app.manage(Core::with_player(
         db,
-        Box::new(TauriEvents(app.clone())),
+        Box::new(events),
         Box::new(EnginePlayer::spawn),
     )?);
     Ok(())

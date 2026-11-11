@@ -30,6 +30,7 @@ crates/umak-audio/    engine, playlist, EQ, plugin host
 crates/umak-play/     player test tool around the engine
 crates/umak-scan/     headless scan and benchmark tool
 crates/umak-convert/  FFmpeg runner and conversion tool
+crates/umak-media/    the system's media controls: media keys and what is playing
 crates/umak-server/   OpenSubsonic (later phase)
 app/                  Tauri shell (umak-app) and Svelte UI
 docs/                 PLAN.md and architecture notes
@@ -47,7 +48,7 @@ Run from the repository root:
 - `cargo run -p umak-convert -- info` shows the FFmpeg found and its encoders; `cargo run -p umak-convert -- <input> <output> <encoding>` converts one file, with encodings such as `flac`, `mp3-v0` or `aac-256`. The converter looks for FFmpeg in `UMAK_FFMPEG`, beside the executable, then on the path. Its tests, and the core's `convert_tags` and `convert_jobs` tests, need FFmpeg installed.
 - `cargo test -p umak-core --features engine`: include the tests of the engine inside the core. `cargo test --workspace` already includes them, because the app turns the feature on.
 - `UMAK_TAG_CORPUS=<folder> cargo test --release -p umak-core --test tag_corpus -- --ignored --nocapture`: write tags to real files and undo them, to find what fixtures cannot. It changes the files, so it needs a folder of copies holding a `.umak-tag-corpus` file.
-- `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio`.
+- `cargo tree -p umak-core -e normal`: must not list Tauri. The same applies to `umak-audio` and `umak-media`.
 
 Run from `app/` (run `npm install` first):
 
