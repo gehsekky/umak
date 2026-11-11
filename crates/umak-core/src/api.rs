@@ -17,7 +17,7 @@ use ts_rs::TS;
 use umak_audio::protocol::{ReplayGainMode, VisualFrame};
 use umak_convert::Ffmpeg;
 
-use crate::art::{ArtCache, TrackArt};
+use crate::art::{self, ArtCache, TrackArt};
 use crate::convert::{self, ConvertPlan, ConvertPreset, ConvertSettings};
 use crate::convert_job::{self, ConversionInfo, ConvertFilePage, ConvertRequest};
 use crate::db::{Database, DbError, new_public_id};
@@ -217,6 +217,12 @@ impl Core {
             art,
             ffmpeg: Mutex::default(),
         })
+    }
+
+    /// The cached picture an image name such as `<hash>-small` stands for, for transports that
+    /// serve pictures by URL. Pictures never go through commands.
+    pub fn art_image(&self, name: &str) -> Option<PathBuf> {
+        art::image_file(self.art.folder(), name)
     }
 
     /// Keeps every track's cover art cached in the background, starting with tracks added

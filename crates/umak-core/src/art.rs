@@ -97,6 +97,14 @@ pub fn art_file(folder: &Path, art: &str, size: ArtSize) -> Option<PathBuf> {
     )
 }
 
+/// The file an image name such as `<hash>-small` stands for, if there is one. Names come from
+/// clients asking for pictures, so anything else names nothing.
+pub fn image_file(folder: &Path, name: &str) -> Option<PathBuf> {
+    let (art, size) = name.rsplit_once('-')?;
+    let file = art_file(folder, art, ArtSize::parse(size)?)?;
+    file.is_file().then_some(file)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
     Embedded,
@@ -740,6 +748,17 @@ mod tests {
         let written = fs::metadata(&file).unwrap().modified().unwrap();
         assert_eq!(store(dir.path(), &picture).unwrap(), art);
         assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), written);
+
+        let named = image_file(dir.path(), &format!("{art}-large")).unwrap();
+        assert_eq!(named, art_file(dir.path(), &art, ArtSize::Large).unwrap());
+        for name in [
+            format!("{art}-huge"),
+            format!("{art}small"),
+            "0123456789abcdef0123456789abcdef-small".to_owned(),
+            "..-small".to_owned(),
+        ] {
+            assert_eq!(image_file(dir.path(), &name), None, "{name}");
+        }
 
         assert!(store(dir.path(), b"not a picture").is_err());
         assert_eq!(art_file(dir.path(), "../../secret", ArtSize::Small), None);

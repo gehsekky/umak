@@ -4,8 +4,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread;
 
 use serde_json::Value;
+use tauri::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use umak_core::api::{self, ApiError, Core, CoreEvent, EventSink};
 use umak_core::db::{Database, DbError};
@@ -13,6 +16,9 @@ use umak_core::player_engine::EnginePlayer;
 use umak_media::MediaSession;
 
 const EVENT_CHANNEL: &str = "umak:event";
+/// Serves cached cover art, as `<hash>-small` or `<hash>-large`. On Windows the webview asks
+/// for it as http://umak-art.localhost/.
+const ART_SCHEME: &str = "umak-art";
 /// Points the app at another data folder, so test runs leave the real database alone.
 const DATA_DIR_VARIABLE: &str = "UMAK_DATA_DIR";
 
@@ -62,6 +68,24 @@ fn call(core: State<'_, Core>, name: String, args: Value) -> Result<Value, ApiEr
     api::dispatch(&core, &name, args)
 }
 
+/// A cached picture, or 404. A name always shows the same picture, so it may be cached for good.
+fn art_response<R: Runtime>(app: &AppHandle<R>, path: &str) -> Response<Vec<u8>> {
+    let name = path.trim_start_matches('/');
+    let image = app
+        .try_state::<Core>()
+        .and_then(|core| core.art_image(name))
+        .and_then(|file| fs::read(file).ok());
+    let response = Response::builder();
+    match image {
+        Some(bytes) => response
+            .header(CONTENT_TYPE, "image/jpeg")
+            .header(CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .body(bytes),
+        None => response.status(StatusCode::NOT_FOUND).body(Vec::new()),
+    }
+    .expect("the response is well formed")
+}
+
 fn manage_core<R: Runtime>(app: &AppHandle<R>, database: &Path) -> Result<(), DbError> {
     let db = Database::open(database)?;
     let events = AppEvents {
@@ -85,6 +109,12 @@ fn main() {
             fs::create_dir_all(&data_dir)?;
             manage_core(app.handle(), &data_dir.join("umak.db"))?;
             Ok(())
+        })
+        .register_asynchronous_uri_scheme_protocol(ART_SCHEME, |context, request, responder| {
+            let app = context.app_handle().clone();
+            let path = request.uri().path().to_owned();
+            // Off the main thread, since reading a file can wait on the disk.
+            thread::spawn(move || responder.respond(art_response(&app, &path)));
         })
         .invoke_handler(tauri::generate_handler![call])
         .run(tauri::generate_context!())
@@ -164,5 +194,32 @@ mod tests {
 
         let error = invoke(&webview, "no.such.command", json!({})).unwrap_err();
         assert_eq!(error["code"], "unknownCommand");
+    }
+
+    #[test]
+    fn cached_art_is_served_by_name_and_nothing_else_is() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+        manage_core(app.handle(), &temp.path().join("umak.db")).unwrap();
+        let art = "0123456789abcdef0123456789abcdef";
+        let folder = temp.path().join("art").join(&art[..2]);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join(format!("{art}-small.jpg")), b"jpeg bytes").unwrap();
+
+        let found = art_response(app.handle(), &format!("/{art}-small"));
+        assert_eq!(found.status(), StatusCode::OK);
+        assert_eq!(found.headers()[CONTENT_TYPE], "image/jpeg");
+        assert_eq!(found.body(), b"jpeg bytes");
+        for path in [
+            format!("/{art}-large"),
+            "/../umak.db".to_owned(),
+            "/".to_owned(),
+        ] {
+            assert_eq!(
+                art_response(app.handle(), &path).status(),
+                StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
     }
 }
