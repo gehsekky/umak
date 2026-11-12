@@ -193,6 +193,7 @@ fn choice(choices: &[(&str, &str)]) -> SettingKind {
 
 const APPEARANCE: &str = "Appearance";
 const AUDIO: &str = "Audio";
+const PLAYBACK: &str = "Playback";
 const KEYBOARD: &str = "Keyboard shortcuts";
 
 pub const THEME_KEY: &str = "appearance.theme";
@@ -230,6 +231,15 @@ fn check_columns(value: &Value) -> Result<Value, String> {
     } else {
         Err("needs the title".to_owned())
     }
+}
+
+/// An output device is named by the engine, which falls back to the default for one not there.
+fn check_device(value: &Value) -> Result<Value, String> {
+    value
+        .as_str()
+        .filter(|name| name.len() <= 500)
+        .map(|name| Value::String(name.to_owned()))
+        .ok_or_else(|| "needs the name of a device".to_owned())
 }
 
 /// The shortcuts changed from their defaults, by the UI's action IDs: a key such as
@@ -307,6 +317,16 @@ static DECLARED: LazyLock<Vec<Declared>> = LazyLock::new(|| {
         )
         .checked_by(check_columns),
         Declared::new(
+            player::OUTPUT_DEVICE_KEY,
+            AUDIO,
+            "Output device",
+            "Where the sound goes. If the chosen device goes away, playback moves to the \
+             system's default and says so.",
+            SettingKind::Custom,
+            json!(""),
+        )
+        .checked_by(check_device),
+        Declared::new(
             player::VOLUME_KEY,
             AUDIO,
             "Volume",
@@ -359,6 +379,58 @@ static DECLARED: LazyLock<Vec<Declared>> = LazyLock::new(|| {
             player::default_eq(),
         )
         .checked_by(player::check_eq),
+        Declared::new(
+            player::RESUME_KEY,
+            PLAYBACK,
+            "Resume where you left off",
+            "Opens with the last queue at its place, paused and ready to play. Otherwise Play \
+             picks it up.",
+            SettingKind::Toggle,
+            json!(false),
+        ),
+        Declared::new(
+            player::SKIP_KEY,
+            PLAYBACK,
+            "Skip length",
+            "How far Skip forward and Skip back move, and the seek buttons of the system's \
+             media controls.",
+            number(1.0, 60.0, 1.0, Some("s")),
+            json!(5.0),
+        ),
+        Declared::new(
+            player::PREVIOUS_RESTART_KEY,
+            PLAYBACK,
+            "Previous restarts after",
+            "Past this far into a track, Previous starts it again instead of going back one. \
+             At 0, Previous always goes back.",
+            number(0.0, 30.0, 1.0, Some("s")),
+            json!(3.0),
+        ),
+        Declared::new(
+            player::PLAY_SHARE_KEY,
+            PLAYBACK,
+            "A play counts after",
+            "How much of a track has to be heard for it to count as played, in its play count \
+             and last played. Skipped parts are not heard.",
+            number(10.0, 100.0, 5.0, Some("%")),
+            json!(50.0),
+        ),
+        Declared::new(
+            player::PLAY_MINUTES_KEY,
+            PLAYBACK,
+            "Or after",
+            "A long track counts as played after this much listening, if that comes first.",
+            number(1.0, 20.0, 1.0, Some("min")),
+            json!(4.0),
+        ),
+        Declared::new(
+            "player.volumeStep",
+            PLAYBACK,
+            "Volume step",
+            "How much Volume up and Volume down change the volume.",
+            number(1.0, 20.0, 1.0, Some("%")),
+            json!(5.0),
+        ),
         Declared::new(
             "keys.shortcuts",
             KEYBOARD,

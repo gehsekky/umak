@@ -24,13 +24,14 @@ use umak_audio::protocol::PlaybackState;
 use umak_core::api::{CoreEvent, EventSink};
 use umak_core::player::PlayerStatus;
 
-/// How far the seek buttons move, the same as the app's own skip.
-const SKIP_MS: u64 = 5000;
 /// A position this far from where playback should be is a seek, which the controls are told.
 const DRIFT_MS: u64 = 1500;
 
 /// Runs a core command by name with JSON arguments.
 pub type RunCommand = Arc<dyn Fn(&'static str, Value) + Send + Sync>;
+
+/// How far the seek buttons move, read at each press: the app's own skip length.
+pub type SkipLength = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// The picture file to show for a track. The controls keep the last picture they were given,
 /// so a track with no art needs a placeholder. Called again when `artReady` names the track.
@@ -89,6 +90,7 @@ fn command_for(
     event: &MediaControlEvent,
     playing: bool,
     position_ms: u64,
+    skip_ms: u64,
 ) -> Option<(&'static str, Value)> {
     let control = |action: &str| Some(("player.control", json!({ "action": action })));
     let seek = |ms: u64| Some(("player.seek", json!({ "ms": ms })));
@@ -103,7 +105,7 @@ fn command_for(
         MediaControlEvent::Next => control("next"),
         MediaControlEvent::Previous => control("previous"),
         MediaControlEvent::Stop => control("stop"),
-        MediaControlEvent::Seek(direction) => seek(moved(direction, SKIP_MS)),
+        MediaControlEvent::Seek(direction) => seek(moved(direction, skip_ms)),
         MediaControlEvent::SeekBy(direction, by) => seek(moved(direction, by.as_millis() as u64)),
         MediaControlEvent::SetPosition(MediaPosition(at)) => seek(at.as_millis() as u64),
         _ => None,
@@ -150,6 +152,7 @@ impl MediaSession {
         hwnd: Option<*mut c_void>,
         run: RunCommand,
         find_cover: FindCover,
+        skip_length: SkipLength,
     ) -> Result<Self, String> {
         let state = Arc::new(Mutex::new(State {
             shown: None,
@@ -181,8 +184,9 @@ impl MediaSession {
                 };
                 let attached = controls.attach(move |event| {
                     let position = lock(&handler_state).position.clone();
+                    let skip_ms = skip_length();
                     if let Some((name, args)) =
-                        command_for(&event, position.playing, position.now_ms())
+                        command_for(&event, position.playing, position.now_ms(), skip_ms)
                     {
                         run(name, args);
                     }
@@ -396,7 +400,7 @@ mod tests {
 
     #[test]
     fn presses_become_player_commands() {
-        let command = |event, playing| command_for(&event, playing, 10_000);
+        let command = |event, playing| command_for(&event, playing, 10_000, 5000);
         assert_eq!(
             command(MediaControlEvent::Toggle, true),
             Some(("player.control", json!({ "action": "pause" })))
@@ -412,6 +416,16 @@ mod tests {
         assert_eq!(
             command(MediaControlEvent::Seek(SeekDirection::Backward), true),
             Some(("player.seek", json!({ "ms": 5000 })))
+        );
+        // The skip length the app is set to.
+        assert_eq!(
+            command_for(
+                &MediaControlEvent::Seek(SeekDirection::Forward),
+                true,
+                10_000,
+                15_000
+            ),
+            Some(("player.seek", json!({ "ms": 25_000 })))
         );
         assert_eq!(
             command(

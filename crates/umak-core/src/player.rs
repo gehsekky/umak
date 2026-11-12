@@ -5,8 +5,9 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,7 @@ use crate::db::{Database, DbError};
 use crate::library::{TRACK_COLUMNS, TrackRow};
 use crate::playlists::{self, PlayerEdit, PlaylistPage};
 use crate::settings;
-use crate::user_data::{self, PlayTracker};
+use crate::user_data::{self, PlayRule, PlayTracker};
 
 /// How much playback can be lost if the app ends without warning.
 const SAVE_POSITION_EVERY_MS: u64 = 5000;
@@ -41,6 +42,17 @@ pub(crate) const PREAMP_KEY: &str = "player.preampDb";
 /// The preamp's range in decibels.
 pub(crate) const MAX_PREAMP_DB: f32 = 12.0;
 pub(crate) const EQ_KEY: &str = "player.eq";
+/// A device's name, or empty for the system's default.
+pub(crate) const OUTPUT_DEVICE_KEY: &str = "player.outputDevice";
+/// How far Skip forward and Skip back move. The system's media controls read it too.
+pub const SKIP_KEY: &str = "player.skipSeconds";
+pub(crate) const PREVIOUS_RESTART_KEY: &str = "player.previousRestartSeconds";
+pub(crate) const PLAY_SHARE_KEY: &str = "player.playCountPercent";
+pub(crate) const PLAY_MINUTES_KEY: &str = "player.playCountMinutes";
+pub(crate) const RESUME_KEY: &str = "player.resumeAtStart";
+/// An output failing again this soon after the last was replaced leaves playback stopped,
+/// rather than starting engine after engine.
+const REPLACE_AGAIN_AFTER: Duration = Duration::from_secs(10);
 /// Saved presets are the player's own data, kept beside the settings but not one of them.
 const EQ_PRESETS_KEY: &str = "player.eqPresets";
 /// The range of an equalizer band in decibels.
@@ -273,6 +285,36 @@ fn save_setting(conn: &Connection, key: &str, value: &str) -> Result<(), ApiErro
     Ok(())
 }
 
+/// What the player does, as against how it sounds. Views read these from the settings store.
+#[derive(Debug, Clone, PartialEq)]
+struct Behavior {
+    /// None for the system's default.
+    device: Option<String>,
+    restart_threshold_ms: u64,
+    play_rule: PlayRule,
+}
+
+fn load_behavior(conn: &Connection) -> Result<Behavior, ApiError> {
+    load_behavior_with(conn, &[])
+}
+
+fn load_behavior_with(conn: &Connection, changed: &[(&str, &Value)]) -> Result<Behavior, ApiError> {
+    let value = |key: &str| settings::value_with(conn, key, changed);
+    let number =
+        |key: &str| -> Result<f64, ApiError> { Ok(value(key)?.as_f64().unwrap_or_default()) };
+    Ok(Behavior {
+        device: value(OUTPUT_DEVICE_KEY)?
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned),
+        restart_threshold_ms: (number(PREVIOUS_RESTART_KEY)? * 1000.0) as u64,
+        play_rule: PlayRule {
+            share: number(PLAY_SHARE_KEY)? / 100.0,
+            enough_ms: (number(PLAY_MINUTES_KEY)? * 60_000.0) as u64,
+        },
+    })
+}
+
 /// Reads the settings from the store, which has already checked them.
 fn load_settings(conn: &Connection) -> Result<PlayerSettings, ApiError> {
     load_settings_with(conn, &[])
@@ -324,17 +366,32 @@ fn eq_command(eq: &EqSettings) -> Result<PlayerCommand, ApiError> {
     })
 }
 
+/// Every setting an engine follows, as commands, which a new engine gets before anything else.
+fn engine_commands(
+    settings: &PlayerSettings,
+    behavior: &Behavior,
+) -> Result<Vec<PlayerCommand>, ApiError> {
+    Ok(vec![
+        PlayerCommand::SetVolume {
+            volume: audible_volume(settings),
+        },
+        gain_command(settings),
+        eq_command(&settings.eq)?,
+        PlayerCommand::SetRestartThreshold {
+            ms: behavior.restart_threshold_ms,
+        },
+    ])
+}
+
 type Backend = Arc<Mutex<Option<Box<dyn PlayerBackend>>>>;
 
 /// Has a running engine take up every setting. A later engine starts with them.
-fn tell_running_engine_all(backend: &Backend, settings: &PlayerSettings) {
-    if let Some(running) = lock(backend).as_mut() {
-        let _ = running.send(&PlayerCommand::SetVolume {
-            volume: audible_volume(settings),
-        });
-        let _ = running.send(&gain_command(settings));
-        if let Ok(command) = eq_command(&settings.eq) {
-            let _ = running.send(&command);
+fn tell_running_engine_all(backend: &Backend, settings: &PlayerSettings, behavior: &Behavior) {
+    if let Some(running) = lock(backend).as_mut()
+        && let Ok(commands) = engine_commands(settings, behavior)
+    {
+        for command in &commands {
+            let _ = running.send(command);
         }
     }
 }
@@ -348,8 +405,10 @@ pub trait PlayerBackend: Send {
 }
 
 pub type BackendEvents = Arc<dyn Fn(BackendSignal) + Send + Sync>;
+/// Starts an engine on the output device named, or on the system's default for none or for
+/// a device that is not there. Its `Ready` event names the device it opened.
 pub type BackendFactory =
-    Box<dyn FnMut(BackendEvents) -> Result<Box<dyn PlayerBackend>, String> + Send>;
+    Box<dyn FnMut(BackendEvents, Option<&str>) -> Result<Box<dyn PlayerBackend>, String> + Send>;
 
 pub enum BackendSignal {
     Event(PlayerEvent),
@@ -360,7 +419,10 @@ pub enum BackendSignal {
 }
 
 /// For a core that does not play, such as a headless tool.
-pub fn no_engine(_events: BackendEvents) -> Result<Box<dyn PlayerBackend>, String> {
+pub fn no_engine(
+    _events: BackendEvents,
+    _device: Option<&str>,
+) -> Result<Box<dyn PlayerBackend>, String> {
     Err("this build has no audio engine".to_owned())
 }
 
@@ -380,6 +442,12 @@ struct Shared {
     plays: Mutex<PlayTracker>,
     /// Whether a visualizer is open. Not saved: each opens and closes its own.
     visuals: AtomicBool,
+    /// The device the running engine was asked for, None for the system's default.
+    wanted_device: Mutex<Option<String>>,
+    /// What went wrong with the last output, until the engine replacing it is ready.
+    lost_output: Mutex<Option<String>>,
+    /// When an engine was last replaced because its output failed.
+    last_replaced: Mutex<Option<Instant>>,
 }
 
 impl Shared {
@@ -484,7 +552,12 @@ impl Shared {
         }
     }
 
-    fn handle(&self, signal: BackendSignal) {
+    /// Takes in what an engine says, returning true if its output failed and it needs replacing.
+    fn handle(&self, signal: BackendSignal) -> bool {
+        if let BackendSignal::Event(PlayerEvent::OutputFailed { message }) = signal {
+            *lock(&self.lost_output) = Some(message);
+            return true;
+        }
         match signal {
             BackendSignal::Exited => {
                 self.loaded.store(false, Ordering::SeqCst);
@@ -505,13 +578,39 @@ impl Shared {
                 self.events.emit(&CoreEvent::VisualFrame { frame });
             }
         }
+        false
+    }
+
+    /// Notes the device an engine opened, saying why if it is not the one asked for.
+    fn opened(&self, device: String) {
+        let wanted = lock(&self.wanted_device).clone();
+        let lost = lock(&self.lost_output).take();
+        let (status, message) = {
+            let mut status = lock(&self.status);
+            let before = status.device.replace(device.clone());
+            let message = match (lost, wanted) {
+                (Some(_), _) if before.as_deref() == Some(device.as_str()) => Some(format!(
+                    "{device} stopped working for a moment and was opened again."
+                )),
+                (Some(lost), _) => Some(format!("{lost}, so playback moved to {device}.")),
+                (None, Some(wanted)) if wanted != device => Some(format!(
+                    "{wanted} was not found, so {device} is used until it is back and chosen again."
+                )),
+                _ => None,
+            };
+            (status.clone(), message)
+        };
+        if let Some(message) = message {
+            self.events.emit(&CoreEvent::PlayerError { message });
+        }
+        self.events.emit(&CoreEvent::PlayerChanged {
+            status: Box::new(status),
+        });
     }
 
     fn handle_event(&self, event: PlayerEvent) {
         match event {
-            PlayerEvent::Ready { device, .. } => {
-                lock(&self.status).device = Some(device);
-            }
+            PlayerEvent::Ready { device, .. } => self.opened(device),
             PlayerEvent::State {
                 state,
                 index,
@@ -570,7 +669,194 @@ impl Shared {
             PlayerEvent::Error { message } => {
                 self.events.emit(&CoreEvent::PlayerError { message });
             }
+            // Taken by `handle`, which has the engine replaced.
+            PlayerEvent::OutputFailed { .. } => {}
         }
+    }
+
+    /// Shows playback as stopped, as when no engine holds the list.
+    fn show_stopped(&self) {
+        self.loaded.store(false, Ordering::SeqCst);
+        let status = {
+            let mut status = lock(&self.status);
+            status.state = PlaybackState::Stopped;
+            status.clone()
+        };
+        self.events.emit(&CoreEvent::PlayerChanged {
+            status: Box::new(status),
+        });
+    }
+}
+
+/// What starting and replacing an engine takes. The engine's own events hold it weakly, so a
+/// failed output can be replaced from there without keeping the player alive.
+#[derive(Clone)]
+struct Engines {
+    shared: Arc<Shared>,
+    backend: Backend,
+    factory: Arc<Mutex<BackendFactory>>,
+    /// Held across a change to the list and its message to the engine, because an edit
+    /// only makes sense applied to the list before it.
+    list: Arc<Mutex<()>>,
+}
+
+struct WeakEngines {
+    shared: Weak<Shared>,
+    backend: Weak<Mutex<Option<Box<dyn PlayerBackend>>>>,
+    factory: Weak<Mutex<BackendFactory>>,
+    list: Weak<Mutex<()>>,
+}
+
+impl WeakEngines {
+    fn upgrade(&self) -> Option<Engines> {
+        Some(Engines {
+            shared: self.shared.upgrade()?,
+            backend: self.backend.upgrade()?,
+            factory: self.factory.upgrade()?,
+            list: self.list.upgrade()?,
+        })
+    }
+}
+
+impl Engines {
+    fn downgrade(&self) -> WeakEngines {
+        WeakEngines {
+            shared: Arc::downgrade(&self.shared),
+            backend: Arc::downgrade(&self.backend),
+            factory: Arc::downgrade(&self.factory),
+            list: Arc::downgrade(&self.list),
+        }
+    }
+
+    /// Starts an engine on the chosen device, with every setting, before anything plays.
+    fn start(&self) -> Result<Box<dyn PlayerBackend>, ApiError> {
+        let (settings, behavior) = self.shared.db.read(|conn: &Connection| {
+            Ok::<_, ApiError>((load_settings(conn)?, load_behavior(conn)?))
+        })?;
+        lock(&self.shared.wanted_device).clone_from(&behavior.device);
+        let shared = Arc::clone(&self.shared);
+        let engines = self.downgrade();
+        let callback: BackendEvents = Arc::new(move |signal| {
+            if shared.handle(signal)
+                && let Some(engines) = engines.upgrade()
+            {
+                // Not on this thread, which belongs to the engine being replaced.
+                thread::spawn(move || engines.replace_failed());
+            }
+        });
+        let mut started =
+            (lock(&self.factory))(callback, behavior.device.as_deref()).map_err(Player::failure)?;
+        for command in engine_commands(&settings, &behavior)? {
+            started.send(&command).map_err(Player::failure)?;
+        }
+        started.set_visuals(self.shared.visuals.load(Ordering::SeqCst));
+        Ok(started)
+    }
+
+    /// Sends a command, starting the engine if needed. If the engine turns out to have
+    /// died, it starts a new one, which holds no list, so the caller must say so.
+    fn send(&self, command: &PlayerCommand) -> Result<(), ApiError> {
+        let mut backend = lock(&self.backend);
+        if let Some(running) = backend.as_mut() {
+            if running.send(command).is_ok() {
+                return Ok(());
+            }
+            *backend = None;
+            self.shared.loaded.store(false, Ordering::SeqCst);
+        }
+        let mut started = self.start()?;
+        started.send(command).map_err(Player::failure)?;
+        *backend = Some(started);
+        Ok(())
+    }
+
+    fn load(
+        &self,
+        tracks: Vec<TrackEntry>,
+        start: usize,
+        start_ms: u64,
+        paused: bool,
+    ) -> Result<(), ApiError> {
+        lock(&self.shared.status).count = tracks.len() as u32;
+        self.send(&PlayerCommand::Load {
+            tracks,
+            start_index: start,
+            start_ms,
+            paused,
+        })?;
+        self.shared.loaded.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Loads the last session's list and position. The caller holds the list.
+    fn restore(&self, paused: bool) -> Result<(), ApiError> {
+        let (tracks, index, position_ms) = self.shared.db.read(|conn: &Connection| {
+            let tracks = playlists::player_entries(conn)?;
+            let (index, position_ms) = playlists::player_position(conn)?;
+            Ok::<_, ApiError>((tracks, index, position_ms))
+        })?;
+        if tracks.is_empty() {
+            return Ok(());
+        }
+        let (start, start_ms) = match index {
+            Some(index) if (index as usize) < tracks.len() => (index as usize, position_ms),
+            _ => (0, 0),
+        };
+        self.load(tracks, start, start_ms, paused)
+    }
+
+    /// Replaces the engine, as when the output device changes, carrying on from where
+    /// playback was, paused if it was paused. With nothing playing, a running engine is
+    /// replaced at once, so a device that is not there is reported now.
+    fn replace(&self) {
+        let _list = lock(&self.list);
+        let old = lock(&self.backend).take();
+        let had_engine = old.is_some();
+        // Ends the old engine, which can take a moment, before another opens the device.
+        drop(old);
+        let status = self.shared.status_snapshot();
+        let was_loaded = self.shared.loaded.swap(false, Ordering::SeqCst);
+        let result = if was_loaded && status.state != PlaybackState::Stopped {
+            // The position saved as it played is where to carry on from.
+            self.shared
+                .save_position(status.index, u64::try_from(status.position_ms).unwrap_or(0));
+            self.restore(status.state == PlaybackState::Paused)
+        } else if had_engine {
+            self.start()
+                .map(|started| *lock(&self.backend) = Some(started))
+        } else {
+            Ok(())
+        };
+        if let Err(error) = result {
+            self.shared.events.emit(&CoreEvent::PlayerError {
+                message: error.message,
+            });
+            self.shared.show_stopped();
+        }
+    }
+
+    /// Replaces an engine whose output failed, unless the last one failed only just now.
+    fn replace_failed(&self) {
+        let again = {
+            let mut last = lock(&self.shared.last_replaced);
+            let again = last.is_some_and(|at| at.elapsed() < REPLACE_AGAIN_AFTER);
+            *last = Some(Instant::now());
+            again
+        };
+        if !again {
+            self.replace();
+            return;
+        }
+        let lost = lock(&self.shared.lost_output).take();
+        let _list = lock(&self.list);
+        drop(lock(&self.backend).take());
+        self.shared.events.emit(&CoreEvent::PlayerError {
+            message: format!(
+                "{}, again, so playback stopped. Play tries again.",
+                lost.unwrap_or_else(|| "The output stopped working".to_owned())
+            ),
+        });
+        self.shared.show_stopped();
     }
 }
 
@@ -599,14 +885,17 @@ fn moved_place(
 pub struct Player {
     shared: Arc<Shared>,
     backend: Backend,
-    factory: Mutex<BackendFactory>,
-    /// Held across a change to the list and its message to the engine, because an edit
-    /// only makes sense applied to the list before it.
-    list: Mutex<()>,
+    factory: Arc<Mutex<BackendFactory>>,
+    /// See `Engines`.
+    list: Arc<Mutex<()>>,
 }
 
 impl Player {
     pub fn new(db: Arc<Database>, events: Arc<dyn EventSink>, factory: BackendFactory) -> Self {
+        let mut plays = PlayTracker::default();
+        if let Ok(behavior) = db.read(load_behavior) {
+            plays.set_rule(behavior.play_rule);
+        }
         Self {
             shared: Arc::new(Shared {
                 db,
@@ -614,13 +903,25 @@ impl Player {
                 status: Mutex::default(),
                 loaded: AtomicBool::new(false),
                 saved_position_ms: Mutex::new(0),
-                plays: Mutex::new(PlayTracker::default()),
+                plays: Mutex::new(plays),
                 seen_underruns: Mutex::new(0),
                 visuals: AtomicBool::new(false),
+                wanted_device: Mutex::default(),
+                lost_output: Mutex::default(),
+                last_replaced: Mutex::default(),
             }),
             backend: Arc::default(),
-            factory: Mutex::new(factory),
-            list: Mutex::new(()),
+            factory: Arc::new(Mutex::new(factory)),
+            list: Arc::default(),
+        }
+    }
+
+    fn engines(&self) -> Engines {
+        Engines {
+            shared: Arc::clone(&self.shared),
+            backend: Arc::clone(&self.backend),
+            factory: Arc::clone(&self.factory),
+            list: Arc::clone(&self.list),
         }
     }
 
@@ -639,43 +940,12 @@ impl Player {
         ApiError::new(ErrorCode::Internal, message)
     }
 
-    /// Sends a command, starting the engine if needed. If the engine turns out to have
-    /// died, it starts a new one, which holds no list, so the caller must say so.
     fn send(&self, command: &PlayerCommand) -> Result<(), ApiError> {
-        let mut backend = lock(&self.backend);
-        if let Some(running) = backend.as_mut() {
-            if running.send(command).is_ok() {
-                return Ok(());
-            }
-            *backend = None;
-            self.shared.loaded.store(false, Ordering::SeqCst);
-        }
-        let shared = Arc::clone(&self.shared);
-        let callback: BackendEvents = Arc::new(move |signal| shared.handle(signal));
-        let mut started = (lock(&self.factory))(callback).map_err(Self::failure)?;
-        let settings = self.settings()?;
-        started
-            .send(&PlayerCommand::SetVolume {
-                volume: audible_volume(&settings),
-            })
-            .and_then(|()| started.send(&gain_command(&settings)))
-            .and_then(|()| started.send(&eq_command(&settings.eq).map_err(|error| error.message)?))
-            .and_then(|()| started.send(command))
-            .map_err(Self::failure)?;
-        started.set_visuals(self.shared.visuals.load(Ordering::SeqCst));
-        *backend = Some(started);
-        Ok(())
+        self.engines().send(command)
     }
 
     fn load(&self, tracks: Vec<TrackEntry>, start: usize, start_ms: u64) -> Result<(), ApiError> {
-        lock(&self.shared.status).count = tracks.len() as u32;
-        self.send(&PlayerCommand::Load {
-            tracks,
-            start_index: start,
-            start_ms,
-        })?;
-        self.shared.loaded.store(true, Ordering::SeqCst);
-        Ok(())
+        self.engines().load(tracks, start, start_ms, false)
     }
 
     fn checked_start(count: usize, start: u32) -> Result<usize, ApiError> {
@@ -832,7 +1102,7 @@ impl Player {
     pub fn control(&self, action: PlayerAction) -> Result<(), ApiError> {
         let loaded = self.shared.loaded.load(Ordering::SeqCst);
         match action {
-            PlayerAction::Play if !loaded => self.restore(),
+            PlayerAction::Play if !loaded => self.restore(false),
             // With nothing loaded there is nothing for the rest to act on.
             _ if !loaded => Ok(()),
             PlayerAction::Play => self.send(&PlayerCommand::Play),
@@ -882,26 +1152,55 @@ impl Player {
     /// Has a running engine take up settings about to be saved, given as they will be stored.
     /// The engine comes first, because the database may be waiting on a scan.
     pub(crate) fn apply(&self, changed: &[(&str, &Value)]) -> Result<(), ApiError> {
-        let settings = self
+        let (settings, behavior) = self.shared.db.read(|conn: &Connection| {
+            Ok::<_, ApiError>((
+                load_settings_with(conn, changed)?,
+                load_behavior_with(conn, changed)?,
+            ))
+        })?;
+        lock(&self.shared.plays).set_rule(behavior.play_rule);
+        tell_running_engine_all(&self.backend, &settings, &behavior);
+        Ok(())
+    }
+
+    /// Moves playback to the output device now saved, carrying on from where it was.
+    pub(crate) fn output_changed(&self) {
+        self.engines().replace();
+    }
+
+    /// Loads the last session's list at its place, paused, if the settings ask for that and
+    /// nothing has been played yet.
+    pub fn resume_at_start(&self) -> Result<(), ApiError> {
+        let wanted = self
             .shared
             .db
-            .read(|conn| load_settings_with(conn, changed))?;
-        tell_running_engine_all(&self.backend, &settings);
-        Ok(())
+            .read(|conn| settings::value(conn, RESUME_KEY))?;
+        if wanted != json!(true) || self.shared.loaded.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        self.restore(true)
     }
 
     /// Something a background job can call when it has changed settings in the database, such
     /// as an import, so that playback and views follow them.
     pub fn settings_applier(&self) -> impl Fn() + Send + 'static + use<> {
-        let shared = Arc::clone(&self.shared);
-        let backend = Arc::clone(&self.backend);
+        let engines = self.engines();
         move || {
-            if let Ok(settings) = shared.db.read(load_settings) {
-                tell_running_engine_all(&backend, &settings);
-                shared
-                    .events
-                    .emit(&CoreEvent::PlayerSettingsChanged { settings });
+            let shared = &engines.shared;
+            let Ok((settings, behavior)) = shared.db.read(|conn: &Connection| {
+                Ok::<_, ApiError>((load_settings(conn)?, load_behavior(conn)?))
+            }) else {
+                return;
+            };
+            lock(&shared.plays).set_rule(behavior.play_rule);
+            tell_running_engine_all(&engines.backend, &settings, &behavior);
+            let moved = *lock(&shared.wanted_device) != behavior.device;
+            if moved && lock(&engines.backend).is_some() {
+                engines.replace();
             }
+            shared
+                .events
+                .emit(&CoreEvent::PlayerSettingsChanged { settings });
         }
     }
 
@@ -1045,22 +1344,10 @@ impl Player {
         })
     }
 
-    /// Resumes the last session's list and position.
-    fn restore(&self) -> Result<(), ApiError> {
+    /// Resumes the last session's list and position, playing or paused.
+    fn restore(&self, paused: bool) -> Result<(), ApiError> {
         let _list = lock(&self.list);
-        let (tracks, index, position_ms) = self.shared.db.read(|conn: &Connection| {
-            let tracks = playlists::player_entries(conn)?;
-            let (index, position_ms) = playlists::player_position(conn)?;
-            Ok::<_, ApiError>((tracks, index, position_ms))
-        })?;
-        if tracks.is_empty() {
-            return Ok(());
-        }
-        let (start, start_ms) = match index {
-            Some(index) if (index as usize) < tracks.len() => (index as usize, position_ms),
-            _ => (0, 0),
-        };
-        self.load(tracks, start, start_ms)
+        self.engines().restore(paused)
     }
 }
 
@@ -1090,6 +1377,8 @@ mod tests {
         starts: Arc<StdMutex<u32>>,
         broken: Arc<StdMutex<bool>>,
         visuals: Arc<StdMutex<Vec<bool>>>,
+        /// The device each engine was started on.
+        devices: Arc<StdMutex<Vec<Option<String>>>>,
     }
 
     struct FakeBackend(FakeEngine);
@@ -1141,10 +1430,15 @@ mod tests {
         let events = Recording::default();
         let engine = FakeEngine::default();
         let factory_engine = engine.clone();
-        let factory: BackendFactory = Box::new(move |callback| {
+        let factory: BackendFactory = Box::new(move |callback, device: Option<&str>| {
             *factory_engine.signal.lock().unwrap() = Some(callback);
             *factory_engine.starts.lock().unwrap() += 1;
             *factory_engine.broken.lock().unwrap() = false;
+            factory_engine
+                .devices
+                .lock()
+                .unwrap()
+                .push(device.map(str::to_owned));
             Ok(Box::new(FakeBackend(factory_engine.clone())))
         });
         let player = Player::new(Arc::clone(&db), Arc::new(events.clone()), factory);
@@ -1172,6 +1466,7 @@ mod tests {
                         PlayerCommand::SetVolume { .. }
                             | PlayerCommand::SetGain { .. }
                             | PlayerCommand::SetEq { .. }
+                            | PlayerCommand::SetRestartThreshold { .. }
                     )
                 })
                 .collect()
@@ -1236,6 +1531,7 @@ mod tests {
             tracks,
             start_index,
             start_ms,
+            ..
         } = &commands[1]
         else {
             panic!("expected a load");
@@ -1436,7 +1732,7 @@ mod tests {
         let db = Arc::new(Database::open(&path).unwrap());
         let engine = FakeEngine::default();
         let factory_engine = engine.clone();
-        let factory: BackendFactory = Box::new(move |callback| {
+        let factory: BackendFactory = Box::new(move |callback, _device| {
             *factory_engine.signal.lock().unwrap() = Some(callback);
             Ok(Box::new(FakeBackend(factory_engine.clone())))
         });
@@ -1448,6 +1744,7 @@ mod tests {
             tracks,
             start_index,
             start_ms,
+            ..
         } = commands.last().unwrap()
         else {
             panic!("expected a load, got {commands:?}");
@@ -1462,6 +1759,204 @@ mod tests {
         fixture.player.control(PlayerAction::Play).unwrap();
         assert!(fixture.commands().is_empty());
         assert_eq!(*fixture.engine.starts.lock().unwrap(), 0);
+    }
+
+    fn set(fixture: &Fixture, key: &str, value: Value) {
+        fixture
+            .db
+            .write(|conn| settings::write(conn, key, &value))
+            .unwrap();
+    }
+
+    fn errors(fixture: &Fixture) -> Vec<String> {
+        fixture
+            .events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                CoreEvent::PlayerError { message } => Some(message.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn ready(fixture: &Fixture, device: &str) {
+        fixture.signal(PlayerEvent::Ready {
+            device: device.to_owned(),
+            sample_rate: 48_000,
+            channels: 2,
+        });
+    }
+
+    fn last_load(fixture: &Fixture) -> (usize, u64, bool) {
+        let commands = fixture.commands();
+        let Some(PlayerCommand::Load {
+            start_index,
+            start_ms,
+            paused,
+            ..
+        }) = commands.last()
+        else {
+            panic!("expected a load, got {commands:?}");
+        };
+        (*start_index, *start_ms, *paused)
+    }
+
+    fn wait_until(what: &str, done: impl Fn() -> bool) {
+        let began = Instant::now();
+        while !done() {
+            assert!(began.elapsed() < Duration::from_secs(5), "{what}");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn changing_the_output_carries_on_from_the_same_place_on_the_new_device() {
+        let fixture = fixture();
+        let tracks = ["a".to_owned(), "b".to_owned()];
+        fixture.player.play_tracks(&tracks, 0).unwrap();
+        fixture.signal(state(PlaybackState::Paused, 1, "b", 7000));
+
+        set(&fixture, OUTPUT_DEVICE_KEY, json!("Headphones"));
+        fixture.player.output_changed();
+        assert_eq!(
+            *fixture.engine.devices.lock().unwrap(),
+            [None, Some("Headphones".to_owned())]
+        );
+        assert_eq!(last_load(&fixture), (1, 7000, true));
+    }
+
+    #[test]
+    fn changing_the_output_with_nothing_playing_opens_it_at_once_if_an_engine_runs() {
+        let fixture = fixture();
+        set(&fixture, OUTPUT_DEVICE_KEY, json!("Headphones"));
+        fixture.player.output_changed();
+        assert_eq!(*fixture.engine.starts.lock().unwrap(), 0);
+
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        fixture.player.control(PlayerAction::Stop).unwrap();
+        fixture.signal(state(PlaybackState::Stopped, 0, "a", 0));
+        set(&fixture, OUTPUT_DEVICE_KEY, json!(""));
+        fixture.player.output_changed();
+        assert_eq!(
+            *fixture.engine.devices.lock().unwrap(),
+            [Some("Headphones".to_owned()), None]
+        );
+    }
+
+    #[test]
+    fn a_device_that_is_not_there_is_reported_with_the_one_used() {
+        let fixture = fixture();
+        set(&fixture, OUTPUT_DEVICE_KEY, json!("Headphones"));
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        ready(&fixture, "Speakers");
+        assert_eq!(fixture.player.status().device.as_deref(), Some("Speakers"));
+        assert_eq!(
+            errors(&fixture),
+            ["Headphones was not found, so Speakers is used until it is back and chosen again."]
+        );
+        set(&fixture, OUTPUT_DEVICE_KEY, json!("Speakers"));
+        fixture.player.output_changed();
+        ready(&fixture, "Speakers");
+        assert_eq!(errors(&fixture).len(), 1);
+    }
+
+    #[test]
+    fn a_failed_output_is_replaced_and_playback_carries_on_unless_it_fails_again_at_once() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        ready(&fixture, "Headphones");
+        fixture.signal(state(PlaybackState::Playing, 0, "a", 5000));
+
+        fixture.signal(PlayerEvent::OutputFailed {
+            message: "Headphones stopped working".to_owned(),
+        });
+        wait_until("no new engine", || {
+            *fixture.engine.starts.lock().unwrap() == 2
+                && matches!(fixture.commands().last(), Some(PlayerCommand::Load { .. }))
+        });
+        assert_eq!(last_load(&fixture), (0, 5000, false));
+        ready(&fixture, "Speakers");
+        assert_eq!(
+            errors(&fixture),
+            ["Headphones stopped working, so playback moved to Speakers."]
+        );
+
+        fixture.signal(PlayerEvent::OutputFailed {
+            message: "Speakers stopped working".to_owned(),
+        });
+        wait_until("still playing", || {
+            fixture.player.status().state == PlaybackState::Stopped
+        });
+        assert_eq!(*fixture.engine.starts.lock().unwrap(), 2);
+        assert_eq!(
+            errors(&fixture).last().map(String::as_str),
+            Some("Speakers stopped working, again, so playback stopped. Play tries again.")
+        );
+    }
+
+    #[test]
+    fn the_last_queue_is_loaded_paused_at_start_only_if_asked_for() {
+        let fixture = fixture();
+        let tracks = ["a".to_owned(), "b".to_owned()];
+        fixture.player.play_tracks(&tracks, 1).unwrap();
+        fixture.signal(state(PlaybackState::Playing, 1, "b", 6000));
+        let events: Arc<dyn EventSink> = Arc::new(fixture.events.clone());
+        let restarted = Player::new(
+            Arc::clone(&fixture.db),
+            Arc::clone(&events),
+            Box::new(no_engine),
+        );
+        restarted.resume_at_start().unwrap();
+        assert!(!restarted.shared.loaded.load(Ordering::SeqCst));
+
+        set(&fixture, RESUME_KEY, json!(true));
+        let engine = fixture.engine.clone();
+        let restarted = Player::new(
+            Arc::clone(&fixture.db),
+            events,
+            Box::new(move |_, _| Ok(Box::new(FakeBackend(engine.clone())))),
+        );
+        restarted.resume_at_start().unwrap();
+        assert_eq!(last_load(&fixture), (1, 6000, true));
+    }
+
+    #[test]
+    fn previous_and_play_counting_follow_the_settings() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        let threshold = json!(0.0);
+        let share = json!(10.0);
+        fixture
+            .player
+            .apply(&[(PREVIOUS_RESTART_KEY, &threshold), (PLAY_SHARE_KEY, &share)])
+            .unwrap();
+        assert!(
+            fixture
+                .all_commands()
+                .contains(&PlayerCommand::SetRestartThreshold { ms: 0 })
+        );
+        // A tenth of a 100-second track counts.
+        fixture.signal(PlayerEvent::State {
+            state: PlaybackState::Playing,
+            index: Some(0),
+            track_id: Some("a".to_owned()),
+            position_ms: 0,
+            duration_ms: Some(100_000),
+        });
+        for position_ms in (250..=10_250).step_by(250) {
+            fixture.signal(PlayerEvent::Position { position_ms });
+        }
+        let plays: i64 = fixture
+            .db
+            .read(|conn| {
+                conn.query_row("SELECT count(*) FROM play_history", [], |row| row.get(0))
+                    .map_err(DbError::from)
+            })
+            .unwrap();
+        assert_eq!(plays, 1);
     }
 
     #[test]
@@ -1742,7 +2237,8 @@ mod tests {
             }
         );
         assert!(matches!(commands[2], PlayerCommand::SetEq { .. }));
-        assert!(matches!(commands[3], PlayerCommand::Load { .. }));
+        assert_eq!(commands[3], PlayerCommand::SetRestartThreshold { ms: 3000 });
+        assert!(matches!(commands[4], PlayerCommand::Load { .. }));
     }
 
     #[test]
@@ -1781,6 +2277,7 @@ mod tests {
                 enabled: false,
                 bands_db: [0.0; EQ_BANDS],
             },
+            PlayerCommand::SetRestartThreshold { ms: 3000 },
         ]));
     }
 

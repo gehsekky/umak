@@ -7,6 +7,7 @@
   import { formatDuration } from "../lists/format";
   import StarRating from "../lists/StarRating.svelte";
   import { player } from "../player/state.svelte";
+  import { skipMs } from "../player/steps";
   import WaveformSeek from "../player/WaveformSeek.svelte";
   import { gainToSlider, sliderToGain } from "../player/volume";
   import { app } from "../state/app.svelte";
@@ -33,7 +34,7 @@
   );
   const skipTitle = $derived(
     skipKeys.length > 0
-      ? `${skipKeys.join(" and ")} ${skipKeys.length === 1 ? "skips" : "skip"} 5 seconds`
+      ? `${skipKeys.join(" and ")} ${skipKeys.length === 1 ? "skips" : "skip"} ${skipMs() / 1000} seconds`
       : undefined,
   );
 

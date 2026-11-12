@@ -59,6 +59,8 @@ export interface PlayerClient {
   deleteEqPreset(name: string): Promise<void>;
   /** How much of the library has ReplayGain tags. */
   gainCoverage(): Promise<GainCoverage>;
+  /** The output devices there are now, by the names the output device setting takes. */
+  outputDevices(): Promise<string[]>;
   /** A track's waveform. If it is pending, a "waveform" update follows when it is not. */
   waveform(trackId: string): Promise<TrackWaveform>;
   /** A track's cover art. If it is pending, an "art" update naming the track follows. */
@@ -148,6 +150,9 @@ export const playerClient: PlayerClient = {
   },
   gainCoverage() {
     return call("player.gainCoverage", {});
+  },
+  async outputDevices() {
+    return (await call("player.outputDevices", {})).devices;
   },
   waveform(trackId) {
     return call("tracks.waveform", { trackId });

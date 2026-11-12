@@ -252,6 +252,12 @@ impl Core {
         if !for_player.is_empty() {
             self.player.settings_changed()?;
         }
+        if for_player
+            .iter()
+            .any(|(key, _)| *key == player::OUTPUT_DEVICE_KEY)
+        {
+            self.player.output_changed();
+        }
         Ok(saved)
     }
 
@@ -278,6 +284,17 @@ impl Core {
     /// while the app was closed. For the app; tools that only scan leave it off.
     pub fn keep_art_cached(&self) {
         self.art.keep_filled();
+    }
+
+    /// Loads the last session's queue at its place, paused, if the settings ask for that. For
+    /// the app at start; it opens the output device, so tools leave it off.
+    pub fn resume_at_start(&self) -> Result<(), ApiError> {
+        self.player.resume_at_start()
+    }
+
+    /// A setting's value, for a part of the app outside the core that follows one.
+    pub fn setting(&self, key: &str) -> Result<Value, ApiError> {
+        self.db.read(|conn| settings::value(conn, key))
     }
 
     fn ffmpeg(&self) -> Result<Arc<Ffmpeg>, ApiError> {
@@ -379,6 +396,7 @@ commands![
     GetTrackPictures,
     SetPlayerGain,
     GetGainCoverage,
+    ListOutputDevices,
     SetPlayerEq,
     GetEqPresets,
     SaveEqPreset,
@@ -1955,6 +1973,30 @@ impl Command for SetPlayerGain {
 
     fn run(self, core: &Core) -> Result<PlayerSettings, ApiError> {
         core.player.set_gain(self.replay_gain, self.preamp_db)
+    }
+}
+
+/// The output devices there are now, by the names the output device setting takes.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListOutputDevices {}
+
+#[derive(Debug, Serialize, TS)]
+pub struct OutputDevices {
+    pub devices: Vec<String>,
+}
+
+impl Command for ListOutputDevices {
+    const NAME: &'static str = "player.outputDevices";
+    type Output = OutputDevices;
+
+    fn run(self, _core: &Core) -> Result<OutputDevices, ApiError> {
+        #[cfg(feature = "engine")]
+        let devices = umak_audio::output::output_devices()
+            .map_err(|message| ApiError::new(ErrorCode::Internal, message))?;
+        #[cfg(not(feature = "engine"))]
+        let devices = Vec::new();
+        Ok(OutputDevices { devices })
     }
 }
 

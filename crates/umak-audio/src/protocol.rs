@@ -40,12 +40,15 @@ pub enum ReplayGainMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PlayerCommand {
-    /// Replaces the player playlist and starts playing it.
+    /// Replaces the player playlist and starts playing it, or with `paused`, waits at the
+    /// start position for Play.
     #[serde(rename_all = "camelCase")]
     Load {
         tracks: Vec<TrackEntry>,
         start_index: usize,
         start_ms: u64,
+        #[serde(default)]
+        paused: bool,
     },
     /// Changes the list without disturbing what is playing. For each entry in `tracks`,
     /// `origin` gives its index in the old list, or null for a new entry. The engine maps
@@ -76,6 +79,11 @@ pub enum PlayerCommand {
     SetEq {
         enabled: bool,
         bands_db: [f32; EQ_BANDS],
+    },
+    /// Past this far into a track, Previous starts it again instead of going back one. At 0,
+    /// Previous always goes back.
+    SetRestartThreshold {
+        ms: u64,
     },
     Quit,
 }
@@ -122,6 +130,11 @@ pub enum PlayerEvent {
     /// A track could not be played. Playback moves on to the next one.
     TrackFailed {
         id: String,
+        message: String,
+    },
+    /// The device stopped taking audio, as when it is unplugged. Nothing more will be heard
+    /// from this engine, so it needs replacing.
+    OutputFailed {
         message: String,
     },
     Error {

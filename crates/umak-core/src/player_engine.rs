@@ -31,16 +31,21 @@ pub struct EnginePlayer {
 }
 
 impl EnginePlayer {
-    /// Starts an engine on the default output device.
-    pub fn spawn(events: BackendEvents) -> Result<Box<dyn PlayerBackend>, String> {
+    /// Starts an engine on the named output device, or the system's default for none or for
+    /// one that is not there.
+    pub fn spawn(
+        events: BackendEvents,
+        device: Option<&str>,
+    ) -> Result<Box<dyn PlayerBackend>, String> {
         let output = std::env::var(OUTPUT_VARIABLE).unwrap_or_default();
         let null_output = output == "null";
+        let device = device.map(str::to_owned);
         let mut player = Self::with_output(
             move || -> Result<Box<dyn AudioOutput>, String> {
                 if null_output {
                     Ok(Box::new(NullOutput::new(NULL_RATE, NULL_CHANNELS)))
                 } else {
-                    Ok(Box::new(CpalOutput::default_device()?))
+                    Ok(Box::new(CpalOutput::open(device.as_deref())?))
                 }
             },
             events,
@@ -217,6 +222,7 @@ mod tests {
                 }],
                 start_index: 0,
                 start_ms: 0,
+                paused: false,
             })
             .unwrap();
 
@@ -253,6 +259,7 @@ mod tests {
                 }],
                 start_index: 0,
                 start_ms: 0,
+                paused: false,
             })
             .unwrap();
         thread::sleep(Duration::from_millis(200));
@@ -340,7 +347,7 @@ mod tests {
         Player::new(
             db,
             Arc::new(recording.clone()),
-            Box::new(|events| {
+            Box::new(|events, _device| {
                 Ok(Box::new(EnginePlayer::with_output(
                     || Ok(Box::new(NullOutput::new(RATE, 2))),
                     events,
@@ -366,11 +373,15 @@ mod tests {
                 })
                 .collect()
         };
+        // The engine's Ready shows the stopped status with its device first.
         wait_until(
-            || states().last() == Some(&PlaybackState::Stopped),
+            || {
+                let states = states();
+                states.contains(&PlaybackState::Playing)
+                    && states.last() == Some(&PlaybackState::Stopped)
+            },
             "the track to finish",
         );
-        assert!(states().contains(&PlaybackState::Playing));
         let errors: Vec<CoreEvent> = recording
             .0
             .lock()

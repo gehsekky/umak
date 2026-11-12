@@ -12,6 +12,7 @@ use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use umak_core::api::{self, ApiError, Core, CoreEvent, EventSink};
 use umak_core::db::{Database, DbError};
+use umak_core::player::SKIP_KEY;
 use umak_core::player_engine::EnginePlayer;
 use umak_media::MediaSession;
 
@@ -62,7 +63,16 @@ fn media_session<R: Runtime>(app: &AppHandle<R>) -> Option<MediaSession> {
             );
         }
     });
-    MediaSession::start(window, run, find_cover)
+    let handle = app.clone();
+    let skip_length = Arc::new(move || {
+        let seconds = handle
+            .try_state::<Core>()
+            .and_then(|core| core.setting(SKIP_KEY).ok())
+            .and_then(|value| value.as_f64())
+            .unwrap_or(5.0);
+        (seconds * 1000.0) as u64
+    });
+    MediaSession::start(window, run, find_cover, skip_length)
         .map_err(|error| eprintln!("no media controls: {error}"))
         .ok()
 }
@@ -101,6 +111,15 @@ fn manage_core<R: Runtime>(app: &AppHandle<R>, database: &Path) -> Result<(), Db
     let core = Core::with_player(db, Box::new(events), Box::new(EnginePlayer::spawn))?;
     core.keep_art_cached();
     app.manage(core);
+    let handle = app.clone();
+    // Off the main thread, since opening the output device takes a moment.
+    thread::spawn(move || {
+        if let Some(core) = handle.try_state::<Core>()
+            && let Err(error) = core.resume_at_start()
+        {
+            eprintln!("could not resume the last queue: {}", error.message);
+        }
+    });
     Ok(())
 }
 

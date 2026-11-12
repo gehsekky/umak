@@ -5,15 +5,12 @@ import { countOf } from "../lists/format";
 import { pickExportFile, pickExportTarget, pickFolder } from "../platform/dialog";
 import { playerClient } from "../player/client";
 import { player } from "../player/state.svelte";
+import { skipMs, volumeStep } from "../player/steps";
 import { settings } from "../settings/state.svelte";
 import { app } from "../state/app.svelte";
 import { tagDraft } from "../tags/current.svelte";
 import { findVisualizer, nextVisualizer } from "../visuals/plugin";
 import { onActionError, registerAction } from "./registry";
-
-const SKIP_MS = 5000;
-/** A share of the volume slider. */
-const VOLUME_STEP = 0.05;
 
 export function registerAppActions(): void {
   onActionError((message) => app.fail(message));
@@ -431,13 +428,13 @@ export function registerAppActions(): void {
     id: "player.skipForward",
     label: "Skip forward",
     shortcut: "shift+arrowright",
-    run: () => player.skip(SKIP_MS),
+    run: () => player.skip(skipMs()),
   });
   registerAction({
     id: "player.skipBack",
     label: "Skip back",
     shortcut: "shift+arrowleft",
-    run: () => player.skip(-SKIP_MS),
+    run: () => player.skip(-skipMs()),
   });
   registerAction({
     id: "player.playAlbum",
@@ -472,13 +469,13 @@ export function registerAppActions(): void {
     id: "player.volumeUp",
     label: "Volume up",
     shortcut: "ctrl+arrowup",
-    run: () => player.nudgeVolume(VOLUME_STEP),
+    run: () => player.nudgeVolume(volumeStep()),
   });
   registerAction({
     id: "player.volumeDown",
     label: "Volume down",
     shortcut: "ctrl+arrowdown",
-    run: () => player.nudgeVolume(-VOLUME_STEP),
+    run: () => player.nudgeVolume(-volumeStep()),
   });
   registerAction({
     id: "player.setGain",

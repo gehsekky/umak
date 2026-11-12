@@ -5,6 +5,7 @@
   import type { GainCoverage } from "../api/generated/GainCoverage";
   import { playerClient } from "../player/client";
   import Equalizer from "../settings/Equalizer.svelte";
+  import OutputDevice from "../settings/OutputDevice.svelte";
   import SettingRow from "../settings/SettingRow.svelte";
   import ShortcutList from "../settings/ShortcutList.svelte";
   import ThemePicker from "../settings/ThemePicker.svelte";
@@ -65,6 +66,10 @@
 
 {#snippet themePicker()}
   <ThemePicker id="setting-appearance.theme" />
+{/snippet}
+
+{#snippet outputDevice()}
+  <OutputDevice id="setting-player.outputDevice" />
 {/snippet}
 
 {#snippet shortcutList()}
@@ -130,7 +135,9 @@
               ? themePicker
               : definition.key === SHORTCUTS_KEY
                 ? shortcutList
-                : undefined}
+                : definition.key === "player.outputDevice"
+                  ? outputDevice
+                  : undefined}
           note={definition.key === "player.replayGain" ? gainCoverage : undefined}
         />
       {/each}

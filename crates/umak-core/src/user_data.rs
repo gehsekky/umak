@@ -9,7 +9,7 @@ use crate::db::DEFAULT_USER_ID;
 
 pub const MAX_RATING: i64 = 10;
 
-/// However long a track is, this much listening makes it a play.
+/// However long a track is, this much listening makes it a play, unless the user says otherwise.
 const ENOUGH_LISTENING_MS: u64 = 4 * 60 * 1000;
 /// Position reports come a few times a second. A bigger step than this is a seek, and what it
 /// skipped was not listened to.
@@ -65,11 +65,30 @@ pub fn record_play(conn: &Connection, track_id: &str, now: i64) -> rusqlite::Res
     Ok(())
 }
 
-/// Decides when listening has become a play: half the track or four minutes, whichever comes
-/// first, the rule scrobbling services use. It measures listening, not position, so seeking to
-/// the end of a track does not count, and pausing makes no difference.
+/// How much listening makes a play: a share of the track or a length of time, whichever comes
+/// first.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayRule {
+    /// From 0 to 1.
+    pub share: f64,
+    pub enough_ms: u64,
+}
+
+impl Default for PlayRule {
+    /// Half the track or four minutes, the rule scrobbling services use.
+    fn default() -> Self {
+        Self {
+            share: 0.5,
+            enough_ms: ENOUGH_LISTENING_MS,
+        }
+    }
+}
+
+/// Decides when listening has become a play, by its rule. It measures listening, not position,
+/// so seeking to the end of a track does not count, and pausing makes no difference.
 #[derive(Debug, Default)]
 pub struct PlayTracker {
+    rule: PlayRule,
     track: Option<String>,
     needed_ms: u64,
     listened_ms: u64,
@@ -79,6 +98,11 @@ pub struct PlayTracker {
 }
 
 impl PlayTracker {
+    /// Takes effect from the next report of the player's state.
+    pub fn set_rule(&mut self, rule: PlayRule) {
+        self.rule = rule;
+    }
+
     /// Takes in the player's state. A new track, or going back to the start of this one, starts
     /// a new listen. A reorder of the queue changes neither.
     pub fn on_state(
@@ -94,8 +118,9 @@ impl PlayTracker {
             self.listened_ms = 0;
             self.counted = false;
         }
-        self.needed_ms = duration_ms.map_or(ENOUGH_LISTENING_MS, |duration| {
-            (duration / 2).min(ENOUGH_LISTENING_MS)
+        let rule = self.rule;
+        self.needed_ms = duration_ms.map_or(rule.enough_ms, |duration| {
+            ((duration as f64 * rule.share) as u64).min(rule.enough_ms)
         });
         self.position_ms = position_ms;
         self.playing = state == PlaybackState::Playing;
