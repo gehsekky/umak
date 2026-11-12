@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SettingDefinition } from "../api/generated/SettingDefinition";
 import type { SettingValue } from "../api/generated/SettingValue";
-import { changedKeys, formatNumber, sections } from "./show";
+import { changedKeys, formatNumber, moveOption, orderedOptions, sections } from "./show";
 
 function setting(changes: Partial<SettingDefinition>): SettingDefinition {
   return {
@@ -69,5 +69,24 @@ describe("setting numbers", () => {
     expect(formatNumber(-1.5, decibels)).toBe("-1.5 dB");
     expect(formatNumber(0, decibels)).toBe("0.0 dB");
     expect(formatNumber(5, { min: 1, step: 1, unit: null })).toBe("5");
+    expect(formatNumber(110, { min: 80, step: 5, unit: "%" })).toBe("110%");
+  });
+});
+
+describe("order settings", () => {
+  const options = ["a", "b", "c", "d"].map((value) => ({ value, label: value.toUpperCase() }));
+
+  it("list the chosen options in their order, then the rest", () => {
+    expect(orderedOptions(options, ["c", "a"]).map((option) => option.value)).toEqual([
+      "c",
+      "a",
+      "b",
+      "d",
+    ]);
+  });
+
+  it("move one option a place, staying within the list", () => {
+    expect(moveOption(["a", "b", "c"], 1, -1)).toEqual(["b", "a", "c"]);
+    expect(moveOption(["a", "b", "c"], 2, 1)).toEqual(["a", "b", "c"]);
   });
 });

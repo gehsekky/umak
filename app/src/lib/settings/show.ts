@@ -1,14 +1,16 @@
 // How the Settings view finds, groups and shows settings.
 
 import type { SettingDefinition } from "../api/generated/SettingDefinition";
+import type { SettingOption } from "../api/generated/SettingOption";
 import type { SettingValue } from "../api/generated/SettingValue";
 
 export type Section = { name: string; settings: SettingDefinition[] };
 
 /** The text a search looks through for a setting. */
 function searchText(definition: SettingDefinition): string {
+  const kind = definition.kind;
   const options =
-    definition.kind.type === "choice" ? definition.kind.options.map((option) => option.label) : [];
+    kind.type === "choice" || kind.type === "order" ? kind.options.map((option) => option.label) : [];
   return [definition.section, definition.label, definition.help, ...options]
     .join(" ")
     .toLowerCase();
@@ -53,5 +55,21 @@ export function formatNumber(
   const decimals = Math.min(3, String(kind.step).split(".")[1]?.length ?? 0);
   const sign = kind.min < 0 && value > 0 ? "+" : "";
   const shown = `${sign}${value.toFixed(decimals)}`;
-  return kind.unit ? `${shown} ${kind.unit}` : shown;
+  if (!kind.unit) return shown;
+  return kind.unit === "%" ? `${shown}%` : `${shown} ${kind.unit}`;
+}
+
+/** An order setting's options: the chosen ones in their order, then the rest. */
+export function orderedOptions(options: SettingOption[], chosen: string[]): SettingOption[] {
+  const picked = chosen.flatMap((name) => options.filter((option) => option.value === name));
+  return [...picked, ...options.filter((option) => !chosen.includes(option.value))];
+}
+
+/** A list with one entry moved a place up (-1) or down (1). */
+export function moveOption(chosen: string[], place: number, by: -1 | 1): string[] {
+  const target = place + by;
+  if (target < 0 || target >= chosen.length) return chosen;
+  const moved = [...chosen];
+  [moved[place], moved[target]] = [moved[target], moved[place]];
+  return moved;
 }

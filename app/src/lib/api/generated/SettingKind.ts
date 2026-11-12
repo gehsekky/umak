@@ -8,4 +8,4 @@ export type SettingKind = { "type": "toggle" } | { "type": "number", min: number
 /**
  * Shown after the value, such as "dB".
  */
-unit: string | null, } | { "type": "choice", options: Array<SettingOption>, } | { "type": "custom" };
+unit: string | null, } | { "type": "choice", options: Array<SettingOption>, } | { "type": "order", options: Array<SettingOption>, } | { "type": "custom" };

@@ -46,6 +46,7 @@ import type { GetTrackArt } from "./GetTrackArt";
 import type { GetTrackPage } from "./GetTrackPage";
 import type { GetTrackPictures } from "./GetTrackPictures";
 import type { GetTrackWaveform } from "./GetTrackWaveform";
+import type { GetUserThemes } from "./GetUserThemes";
 import type { ImportPreview } from "./ImportPreview";
 import type { JobList } from "./JobList";
 import type { JobRef } from "./JobRef";
@@ -111,6 +112,7 @@ import type { TrackTagValuesList } from "./TrackTagValuesList";
 import type { TrackWaveform } from "./TrackWaveform";
 import type { UndoTagEdit } from "./UndoTagEdit";
 import type { UpdateSmartPlaylist } from "./UpdateSmartPlaylist";
+import type { UserThemes } from "./UserThemes";
 import type { WriteTagEdit } from "./WriteTagEdit";
 
 export type CommandMap = {
@@ -162,6 +164,7 @@ export type CommandMap = {
   "settings.list": { args: ListSettings; output: SettingList };
   "settings.set": { args: SetSetting; output: SettingValue };
   "settings.reset": { args: ResetSettings; output: SettingValues };
+  "appearance.themes": { args: GetUserThemes; output: UserThemes };
   "library.export": { args: ExportLibrary; output: ExportSummary };
   "library.import.preview": { args: PreviewImport; output: ImportPreview };
   "library.import.start": { args: StartImport; output: JobRef };

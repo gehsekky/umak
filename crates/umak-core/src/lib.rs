@@ -22,6 +22,7 @@ pub mod stats;
 pub mod tagcopy;
 pub mod tagedit;
 pub mod tagwrite;
+pub mod themes;
 pub mod transfer;
 pub mod user_data;
 pub mod waveforms;

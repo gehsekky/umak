@@ -4,6 +4,7 @@
   import { runAction } from "../actions/registry";
   import type { SettingDefinition } from "../api/generated/SettingDefinition";
   import { latestOnly } from "../player/volume";
+  import OrderList from "./OrderList.svelte";
   import { formatNumber } from "./show";
   import { settings } from "./state.svelte";
 
@@ -43,7 +44,7 @@
         />
         {definition.label}
       </label>
-    {:else if definition.kind.type === "custom"}
+    {:else if definition.kind.type === "custom" || definition.kind.type === "order"}
       <span class="label">{definition.label}</span>
     {:else}
       <label class="label" for={id}>{definition.label}</label>
@@ -86,6 +87,14 @@
         <option value={option.value}>{option.label}</option>
       {/each}
     </select>
+  {:else if definition.kind.type === "order"}
+    <OrderList
+      {id}
+      options={definition.kind.options}
+      value={Array.isArray(value) ? value.filter((name) => typeof name === "string") : []}
+      {disabled}
+      onchange={send}
+    />
   {:else if definition.kind.type === "custom"}
     {@render control?.()}
   {/if}

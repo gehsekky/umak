@@ -34,6 +34,7 @@ use crate::scan::{self, ScanError, ScanOptions};
 use crate::settings::{self, SettingDefinition, SettingValue};
 use crate::smart::{self, SmartRule};
 use crate::tagedit::{self, TagEdit, TagEditItemPage, TagEditPage, TrackEdits, TrackTagValuesList};
+use crate::themes::{self, UserThemes};
 use crate::transfer::{self, ExportSummary, ImportPreview, RootChoice};
 use crate::user_data;
 use crate::waveforms::{TrackWaveform, Waveforms};
@@ -385,6 +386,7 @@ commands![
     ListSettings,
     SetSetting,
     ResetSettings,
+    GetUserThemes,
     ExportLibrary,
     PreviewImport,
     StartImport,
@@ -2114,6 +2116,21 @@ impl Command for ResetSettings {
                 .collect()
         })?;
         Ok(SettingValues { settings })
+    }
+}
+
+/// The theme files in the themes folder beside the database, which is made if it is missing.
+/// The UI checks each against its tokens.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetUserThemes {}
+
+impl Command for GetUserThemes {
+    const NAME: &'static str = "appearance.themes";
+    type Output = UserThemes;
+
+    fn run(self, core: &Core) -> Result<UserThemes, ApiError> {
+        Ok(themes::read_folder(&themes::folder(&core.db)))
     }
 }
 

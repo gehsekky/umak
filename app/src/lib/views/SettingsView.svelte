@@ -5,6 +5,7 @@
   import { playerClient } from "../player/client";
   import Equalizer from "../settings/Equalizer.svelte";
   import SettingRow from "../settings/SettingRow.svelte";
+  import ThemePicker from "../settings/ThemePicker.svelte";
   import { changedKeys, sections } from "../settings/show";
   import { settings } from "../settings/state.svelte";
   import { app } from "../state/app.svelte";
@@ -52,6 +53,10 @@
 
 {#snippet equalizer()}
   <Equalizer />
+{/snippet}
+
+{#snippet themePicker()}
+  <ThemePicker id="setting-appearance.theme" />
 {/snippet}
 
 {#snippet gainCoverage()}
@@ -107,7 +112,11 @@
         <SettingRow
           {definition}
           disabled={inactive[definition.key] ?? false}
-          control={definition.key === "player.eq" ? equalizer : undefined}
+          control={definition.key === "player.eq"
+            ? equalizer
+            : definition.key === "appearance.theme"
+              ? themePicker
+              : undefined}
           note={definition.key === "player.replayGain" ? gainCoverage : undefined}
         />
       {/each}

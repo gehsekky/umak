@@ -4,6 +4,7 @@
   import { keyBelongsToElement, runShortcut, shortcutName } from "../actions/registry";
   import { player } from "../player/state.svelte";
   import { settings } from "../settings/state.svelte";
+  import { appearance } from "../theme/appearance.svelte";
   import { app } from "../state/app.svelte";
   import { viewsIn } from "./regions";
 
@@ -12,7 +13,7 @@
   let startError = $state<string | null>(null);
 
   onMount(() => {
-    const stops: (() => void)[] = [];
+    const stops: (() => void)[] = [appearance.start()];
     Promise.all([app.start(), player.start(), settings.start()])
       .then(([stopApp, stopPlayer, loaded]) => {
         stops.push(stopApp, stopPlayer, loaded.stop);

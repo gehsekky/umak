@@ -31,6 +31,10 @@ pub enum SettingKind {
     Choice {
         options: Vec<SettingOption>,
     },
+    /// Some of the options, in an order of the user's choosing, such as the columns of a list.
+    Order {
+        options: Vec<SettingOption>,
+    },
     /// Has a control of its own, such as the equalizer's bands.
     Custom,
 }
@@ -68,7 +72,8 @@ pub struct SettingValue {
     pub problem: Option<String>,
 }
 
-/// Checks a value for a custom setting, bringing it into shape where it can.
+/// Checks a value further than its kind does, or wholly for a custom setting, bringing it into
+/// shape where it can.
 type Check = fn(&Value) -> Result<Value, String>;
 
 struct Declared {
@@ -111,6 +116,14 @@ impl Declared {
 
     /// The value in the form it is stored and used, or what is wrong with it.
     fn check(&self, value: &Value) -> Result<Value, String> {
+        let value = self.check_kind(value)?;
+        match self.check {
+            Some(check) => check(&value),
+            None => Ok(value),
+        }
+    }
+
+    fn check_kind(&self, value: &Value) -> Result<Value, String> {
         match &self.definition.kind {
             SettingKind::Toggle => value
                 .as_bool()
@@ -130,10 +143,25 @@ impl Declared {
                         options.iter().map(|option| option.value.as_str()).collect();
                     format!("needs one of {}", names.join(", "))
                 }),
-            SettingKind::Custom => match self.check {
-                Some(check) => check(value),
-                None => Ok(value.clone()),
-            },
+            SettingKind::Order { options } => {
+                let chosen = value.as_array().ok_or_else(|| "needs a list".to_owned())?;
+                let mut order = Vec::new();
+                for item in chosen {
+                    let name = item
+                        .as_str()
+                        .filter(|name| options.iter().any(|option| option.value == *name))
+                        .ok_or_else(|| format!("has {item}, which is not one of its options"))?;
+                    if order.contains(&name) {
+                        return Err(format!("has {name} twice"));
+                    }
+                    order.push(name);
+                }
+                if order.is_empty() {
+                    return Err("needs at least one".to_owned());
+                }
+                Ok(json!(order))
+            }
+            SettingKind::Custom => Ok(value.clone()),
         }
     }
 }
@@ -147,23 +175,110 @@ fn number(min: f64, max: f64, step: f64, unit: Option<&str>) -> SettingKind {
     }
 }
 
-fn choice(options: &[(&str, &str)]) -> SettingKind {
+fn options(options: &[(&str, &str)]) -> Vec<SettingOption> {
+    options
+        .iter()
+        .map(|(value, label)| SettingOption {
+            value: (*value).to_owned(),
+            label: (*label).to_owned(),
+        })
+        .collect()
+}
+
+fn choice(choices: &[(&str, &str)]) -> SettingKind {
     SettingKind::Choice {
-        options: options
-            .iter()
-            .map(|(value, label)| SettingOption {
-                value: (*value).to_owned(),
-                label: (*label).to_owned(),
-            })
-            .collect(),
+        options: options(choices),
     }
 }
 
+const APPEARANCE: &str = "Appearance";
 const AUDIO: &str = "Audio";
+
+pub const THEME_KEY: &str = "appearance.theme";
+
+/// The columns a track list can show, by the names the UI knows them by.
+const TRACK_COLUMNS: [(&str, &str); 11] = [
+    ("number", "#"),
+    ("title", "Title"),
+    ("artist", "Artist"),
+    ("album", "Album"),
+    ("track", "Disc and track"),
+    ("year", "Year"),
+    ("time", "Time"),
+    ("format", "Format"),
+    ("rating", "Rating"),
+    ("plays", "Plays"),
+    ("lastPlayed", "Last played"),
+];
+
+/// A theme is named by the UI, which knows the themes that come with it and checks files.
+fn check_theme(value: &Value) -> Result<Value, String> {
+    value
+        .as_str()
+        .filter(|name| !name.is_empty() && name.len() <= 200)
+        .map(|name| Value::String(name.to_owned()))
+        .ok_or_else(|| "needs the name of a theme".to_owned())
+}
+
+fn check_columns(value: &Value) -> Result<Value, String> {
+    let has_title = value
+        .as_array()
+        .is_some_and(|columns| columns.iter().any(|column| column == "title"));
+    if has_title {
+        Ok(value.clone())
+    } else {
+        Err("needs the title".to_owned())
+    }
+}
 
 /// Every setting, in the order it is listed.
 static DECLARED: LazyLock<Vec<Declared>> = LazyLock::new(|| {
     vec![
+        Declared::new(
+            THEME_KEY,
+            APPEARANCE,
+            "Theme",
+            "The colors, fonts and sizes of everything. Your own themes are JSON files in the \
+             themes folder, and a theme may give only the tokens it changes.",
+            SettingKind::Custom,
+            json!("default"),
+        )
+        .checked_by(check_theme),
+        Declared::new(
+            "appearance.textSize",
+            APPEARANCE,
+            "Text size",
+            "Scales the text, and the rows and panels holding it, from the theme's sizes.",
+            number(80.0, 150.0, 5.0, Some("%")),
+            json!(100.0),
+        ),
+        Declared::new(
+            "appearance.density",
+            APPEARANCE,
+            "Density",
+            "How much room there is around things: rows, gaps and margins.",
+            choice(&[
+                ("compact", "Compact"),
+                ("normal", "Normal"),
+                ("roomy", "Roomy"),
+            ]),
+            json!("normal"),
+        ),
+        Declared::new(
+            "appearance.trackColumns",
+            APPEARANCE,
+            "Track list columns",
+            "The columns of the library, album and playlist lists, in order. The title is \
+             always shown. In a narrow window, the disc and track, year, format, plays and last \
+             played columns are left out first.",
+            SettingKind::Order {
+                options: options(&TRACK_COLUMNS),
+            },
+            json!([
+                "number", "title", "artist", "album", "year", "time", "format", "rating", "plays"
+            ]),
+        )
+        .checked_by(check_columns),
         Declared::new(
             player::VOLUME_KEY,
             AUDIO,
@@ -392,6 +507,32 @@ mod tests {
             assert!(!keys.contains(&&definition.key), "{} twice", definition.key);
             keys.push(&definition.key);
         }
+    }
+
+    #[test]
+    fn orders_keep_known_options_once_each_in_the_order_given() {
+        let (_dir, db) = open();
+        let columns = "appearance.trackColumns";
+        let saved = db
+            .write(|conn| write(conn, columns, &json!(["title", "plays", "number"])))
+            .unwrap();
+        assert_eq!(saved.value, json!(["title", "plays", "number"]));
+        for bad in [
+            json!(["title", "title"]),
+            json!(["title", "genre"]),
+            json!(["artist"]),
+            json!([]),
+            json!("title"),
+        ] {
+            let error = db.write(|conn| write(conn, columns, &bad)).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidArgs, "{bad}");
+        }
+        assert_eq!(
+            db.write(|conn| write(conn, columns, &json!(["artist"])))
+                .unwrap_err()
+                .message,
+            "Track list columns needs the title"
+        );
     }
 
     #[test]
