@@ -6,26 +6,31 @@ import type { SettingValue } from "../api/generated/SettingValue";
 
 export type Section = { name: string; settings: SettingDefinition[] };
 
-/** The text a search looks through for a setting. */
-function searchText(definition: SettingDefinition): string {
+/** The text a search looks through for a setting, with any more its control lists. */
+function searchText(definition: SettingDefinition, more: string): string {
   const kind = definition.kind;
   const options =
     kind.type === "choice" || kind.type === "order" ? kind.options.map((option) => option.label) : [];
-  return [definition.section, definition.label, definition.help, ...options]
+  return [definition.section, definition.label, definition.help, ...options, more]
     .join(" ")
     .toLowerCase();
 }
 
 /**
  * The settings listed in the Settings view under their sections, in the order the core
- * declares them. With a search, only those holding every word of it are left.
+ * declares them. With a search, only those holding every word of it are left. A setting with
+ * a control of its own, such as a list of shortcuts, can give more text to search.
  */
-export function sections(definitions: SettingDefinition[], query: string): Section[] {
+export function sections(
+  definitions: SettingDefinition[],
+  query: string,
+  more: Record<string, string> = {},
+): Section[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   const found: Section[] = [];
   for (const definition of definitions) {
     if (definition.hidden) continue;
-    const text = searchText(definition);
+    const text = searchText(definition, more[definition.key] ?? "");
     if (!words.every((word) => text.includes(word))) continue;
     let section = found.find((candidate) => candidate.name === definition.section);
     if (!section) {

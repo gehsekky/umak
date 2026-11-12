@@ -21,7 +21,7 @@
     positionMs: number;
     durationMs: number;
     disabled: boolean;
-    title: string;
+    title?: string;
     oninput: (ms: number) => void;
     onchange: (ms: number) => void;
   } = $props();

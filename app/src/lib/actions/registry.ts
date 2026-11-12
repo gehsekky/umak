@@ -4,6 +4,7 @@
 import type { ConvertSettings } from "../api/generated/ConvertSettings";
 import type { ReplayGainMode } from "../api/generated/ReplayGainMode";
 import type { SmartRule } from "../api/generated/SmartRule";
+import { actionForKey, type ChangedShortcuts } from "./shortcuts";
 
 /** Actions and the arguments they take. */
 export type ActionMap = {
@@ -91,13 +92,23 @@ export type ActionMap = {
 
 export type ActionId = keyof ActionMap;
 
+/**
+ * An action without arguments has a shortcut by default, such as "ctrl+n", or null for none,
+ * and the user can change it. False is for one that only makes sense on its own screen.
+ * Actions with arguments cannot have one.
+ */
+type ShortcutField<K extends ActionId> = ActionMap[K] extends void
+  ? { shortcut: string | null | false }
+  : { shortcut?: never };
+
 export type Action<K extends ActionId> = {
   id: K;
   label: string;
-  /** For example "ctrl+n". Actions with arguments cannot have one. */
-  shortcut?: ActionMap[K] extends void ? string : never;
   run: (args: ActionMap[K]) => unknown;
-};
+} & ShortcutField<K>;
+
+/** An action that can take a shortcut, with the one it has by default. */
+export type ShortcutAction = { id: ActionId; label: string; shortcut: string | null };
 
 type Errors = (message: string) => void;
 
@@ -116,6 +127,17 @@ export function onActionError(handler: Errors): void {
 
 export function actionLabel(id: ActionId): string {
   return actions.get(id)?.label ?? id;
+}
+
+/** The actions that can take a shortcut, in the order they were registered. */
+export function shortcutActions(): ShortcutAction[] {
+  const found: ShortcutAction[] = [];
+  for (const action of actions.values()) {
+    const shortcut = (action as { shortcut?: string | null | false }).shortcut;
+    if (shortcut === undefined || shortcut === false) continue;
+    found.push({ id: action.id, label: action.label, shortcut });
+  }
+  return found;
 }
 
 /** Runs an action. Failures are reported, never thrown at the button that ran it. */
@@ -165,13 +187,13 @@ export function keyBelongsToElement(name: string, tag: string | null): boolean {
   return name.includes("arrow") && tag !== null && ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
 }
 
-/** Runs the action bound to a key press, returning whether there was one. */
-export function runShortcut(name: string): boolean {
-  for (const action of actions.values()) {
-    if (action.shortcut === name) {
-      void runAction(action.id as "nav.library");
-      return true;
-    }
-  }
-  return false;
+/**
+ * Runs the action bound to a key press, with the shortcuts the user changed, returning whether
+ * there was one.
+ */
+export function runShortcut(name: string, changed: ChangedShortcuts = {}): boolean {
+  const id = actionForKey(name, shortcutActions(), changed);
+  if (id === null) return false;
+  void runAction(id as "nav.library");
+  return true;
 }

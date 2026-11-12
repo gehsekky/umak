@@ -193,6 +193,7 @@ fn choice(choices: &[(&str, &str)]) -> SettingKind {
 
 const APPEARANCE: &str = "Appearance";
 const AUDIO: &str = "Audio";
+const KEYBOARD: &str = "Keyboard shortcuts";
 
 pub const THEME_KEY: &str = "appearance.theme";
 
@@ -229,6 +230,32 @@ fn check_columns(value: &Value) -> Result<Value, String> {
     } else {
         Err("needs the title".to_owned())
     }
+}
+
+/// The shortcuts changed from their defaults, by the UI's action IDs: a key such as
+/// "ctrl+n", or null for none. The UI knows the actions and their defaults, so a name it does
+/// not know is kept for a version that does.
+fn check_shortcuts(value: &Value) -> Result<Value, String> {
+    let changed = value
+        .as_object()
+        .ok_or_else(|| "needs actions and their keys".to_owned())?;
+    let mut keys: Vec<&str> = Vec::new();
+    for (action, key) in changed {
+        if action.is_empty() || action.len() > 100 {
+            return Err("has an action without a proper name".to_owned());
+        }
+        match key {
+            Value::Null => {}
+            Value::String(key) if !key.is_empty() && key.len() <= 40 => {
+                if keys.contains(&key.as_str()) {
+                    return Err(format!("gives {key} to more than one action"));
+                }
+                keys.push(key);
+            }
+            _ => return Err(format!("has {key} for {action}, which is not a key")),
+        }
+    }
+    Ok(value.clone())
 }
 
 /// Every setting, in the order it is listed.
@@ -332,6 +359,16 @@ static DECLARED: LazyLock<Vec<Declared>> = LazyLock::new(|| {
             player::default_eq(),
         )
         .checked_by(player::check_eq),
+        Declared::new(
+            "keys.shortcuts",
+            KEYBOARD,
+            "Shortcuts",
+            "Plain keys do nothing while typing in a box or with a button chosen, and arrows \
+             with Ctrl or Shift move through text and sliders.",
+            SettingKind::Custom,
+            json!({}),
+        )
+        .checked_by(check_shortcuts),
     ]
 });
 
@@ -532,6 +569,31 @@ mod tests {
                 .unwrap_err()
                 .message,
             "Track list columns needs the title"
+        );
+    }
+
+    #[test]
+    fn shortcuts_give_each_key_to_one_action() {
+        let (_dir, db) = open();
+        let shortcuts = "keys.shortcuts";
+        let changed = json!({"player.stop": "s", "player.toggleMute": null, "later.action": "x"});
+        let saved = db.write(|conn| write(conn, shortcuts, &changed)).unwrap();
+        assert_eq!(saved.value, changed);
+        for bad in [
+            json!({"player.stop": "s", "player.next": "s"}),
+            json!({"player.stop": ""}),
+            json!({"player.stop": 5}),
+            json!({"": "s"}),
+            json!(["s"]),
+        ] {
+            let error = db.write(|conn| write(conn, shortcuts, &bad)).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidArgs, "{bad}");
+        }
+        assert_eq!(
+            db.write(|conn| write(conn, shortcuts, &json!({"a": "s", "b": "s"})))
+                .unwrap_err()
+                .message,
+            "Shortcuts gives s to more than one action"
         );
     }
 

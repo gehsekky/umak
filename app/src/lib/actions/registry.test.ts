@@ -6,6 +6,7 @@ import {
   registerAction,
   runAction,
   runShortcut,
+  shortcutActions,
   shortcutName,
 } from "./registry";
 
@@ -46,6 +47,21 @@ describe("action registry", () => {
     await Promise.resolve();
     expect(run).toHaveBeenCalledOnce();
     expect(runShortcut("ctrl+q")).toBe(false);
+  });
+
+  it("lists the actions that can take a shortcut and runs them by the keys the user gave", async () => {
+    const stop = vi.fn();
+    registerAction({ id: "player.stop", label: "Stop", shortcut: null, run: stop });
+    registerAction({ id: "tags.preview", label: "Preview", shortcut: false, run: vi.fn() });
+    const listed = shortcutActions();
+    expect(listed).toContainEqual({ id: "player.stop", label: "Stop", shortcut: null });
+    expect(listed.map((action) => action.id)).not.toContain("tags.preview");
+    expect(listed.map((action) => action.id)).not.toContain("playlists.create");
+    expect(runShortcut("s")).toBe(false);
+    expect(runShortcut("s", { "player.stop": "s" })).toBe(true);
+    await Promise.resolve();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(runShortcut("ctrl+n", { "playlists.startCreate": null })).toBe(false);
   });
 
   it("names key presses consistently", () => {

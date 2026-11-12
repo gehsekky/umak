@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { shortcutHint } from "../actions/keys";
   import { actionLabel, runAction } from "../actions/registry";
   import { app } from "../state/app.svelte";
 
@@ -95,7 +96,7 @@
     >
     <button
       class="add"
-      title="{actionLabel('playlists.startCreate')} (Ctrl+N)"
+      title="{actionLabel('playlists.startCreate')}{shortcutHint('playlists.startCreate')}"
       aria-label={actionLabel("playlists.startCreate")}
       onclick={() => runAction("playlists.startCreate")}>+</button
     >

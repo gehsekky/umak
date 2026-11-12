@@ -21,6 +21,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "nav.library",
     label: "Library",
+    shortcut: null,
     run: () => {
       app.view = { kind: "library" };
     },
@@ -28,6 +29,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "nav.albums",
     label: "Albums",
+    shortcut: null,
     run: () => {
       app.view = { kind: "albums" };
     },
@@ -42,6 +44,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "nav.folders",
     label: "Library folders",
+    shortcut: null,
     run: () => {
       app.view = { kind: "folders" };
     },
@@ -57,6 +60,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "nav.settings",
     label: "Settings",
+    shortcut: null,
     run: () => {
       app.view = { kind: "settings" };
     },
@@ -65,6 +69,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "nav.tagEdits",
     label: "Tag edits",
+    shortcut: null,
     run: () => {
       app.view = { kind: "tagEdits" };
     },
@@ -72,6 +77,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "nav.conversions",
     label: "Conversions",
+    shortcut: null,
     run: () => {
       app.view = { kind: "conversions" };
     },
@@ -141,6 +147,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "nav.duplicates",
     label: "Duplicates",
+    shortcut: null,
     run: () => {
       app.view = { kind: "duplicates" };
     },
@@ -156,6 +163,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "nav.tagEditor",
     label: "Edit tags",
+    shortcut: null,
     run: () => {
       app.view = { kind: "tagEditor" };
     },
@@ -182,6 +190,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "tags.preview",
     label: "Preview changes",
+    shortcut: false,
     run: async () => {
       if (!tagDraft.changes) return;
       const started = await call("tags.preview.start", { changes: tagDraft.changes });
@@ -223,6 +232,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "tags.closeDraft",
     label: "Cancel",
+    shortcut: false,
     run: () => {
       tagDraft.close();
       app.view = app.editOrigin;
@@ -231,6 +241,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "tags.leaveReview",
     label: "Done",
+    shortcut: false,
     run: () => {
       // A preview canceled from its own screen goes back to what was being edited.
       if (app.view.kind === "tagReview" && tagDraft.editId === app.view.id) {
@@ -257,6 +268,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "library.addFolder",
     label: "Add folder",
+    shortcut: null,
     run: async () => {
       const path = await pickFolder("Add a music folder");
       if (!path) return;
@@ -267,11 +279,13 @@ export function registerAppActions(): void {
   registerAction({
     id: "library.rescan",
     label: "Scan for changes",
+    shortcut: null,
     run: () => call("library.scan.start", { roots: null }),
   });
   registerAction({
     id: "library.cancelScan",
     label: "Cancel",
+    shortcut: false,
     run: async () => {
       if (app.scan) await call("jobs.cancel", { id: app.scan.id });
     },
@@ -279,6 +293,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "library.export",
     label: "Export library",
+    shortcut: null,
     run: async () => {
       const path = await pickExportTarget(`umak-library-${new Date().toISOString().slice(0, 10)}.json`);
       if (!path) return;
@@ -291,6 +306,7 @@ export function registerAppActions(): void {
   registerAction({
     id: "library.chooseImport",
     label: "Import library",
+    shortcut: null,
     run: async () => {
       const path = await pickExportFile();
       if (!path) return;
@@ -393,7 +409,12 @@ export function registerAppActions(): void {
     shortcut: " ",
     run: () => playerClient.control(player.status?.state === "playing" ? "pause" : "play"),
   });
-  registerAction({ id: "player.stop", label: "Stop", run: () => playerClient.control("stop") });
+  registerAction({
+    id: "player.stop",
+    label: "Stop",
+    shortcut: null,
+    run: () => playerClient.control("stop"),
+  });
   registerAction({
     id: "player.next",
     label: "Next",
@@ -547,7 +568,12 @@ export function registerAppActions(): void {
     label: "Move in queue",
     run: ({ positions, before }) => playerClient.moveInQueue(positions, before),
   });
-  registerAction({ id: "queue.clear", label: "Clear", run: () => playerClient.clearQueue() });
+  registerAction({
+    id: "queue.clear",
+    label: "Clear",
+    shortcut: null,
+    run: () => playerClient.clearQueue(),
+  });
   registerAction({
     id: "queue.save",
     label: "Save as playlist",

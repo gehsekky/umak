@@ -1,17 +1,25 @@
 <script lang="ts">
   // Every setting, in sections, with a search. The volume itself is on the player bar.
-  import { runAction } from "../actions/registry";
+  import { runAction, shortcutActions } from "../actions/registry";
+  import { actionGroup, SHORTCUTS_KEY } from "../actions/shortcuts";
   import type { GainCoverage } from "../api/generated/GainCoverage";
   import { playerClient } from "../player/client";
   import Equalizer from "../settings/Equalizer.svelte";
   import SettingRow from "../settings/SettingRow.svelte";
+  import ShortcutList from "../settings/ShortcutList.svelte";
   import ThemePicker from "../settings/ThemePicker.svelte";
   import { changedKeys, sections } from "../settings/show";
   import { settings } from "../settings/state.svelte";
   import { app } from "../state/app.svelte";
 
   let query = $state("");
-  const shown = $derived(sections(settings.definitions, query));
+  /** The search finds the shortcuts setting by its actions too. */
+  const more = {
+    [SHORTCUTS_KEY]: shortcutActions()
+      .map((action) => `${actionGroup(action.id)} ${action.label}`)
+      .join(" "),
+  };
+  const shown = $derived(sections(settings.definitions, query, more));
   /** Every section in full, so resetting one covers what the search leaves out. */
   const whole = $derived(sections(settings.definitions, ""));
 
@@ -57,6 +65,10 @@
 
 {#snippet themePicker()}
   <ThemePicker id="setting-appearance.theme" />
+{/snippet}
+
+{#snippet shortcutList()}
+  <ShortcutList id="setting-{SHORTCUTS_KEY}" {query} />
 {/snippet}
 
 {#snippet gainCoverage()}
@@ -116,7 +128,9 @@
             ? equalizer
             : definition.key === "appearance.theme"
               ? themePicker
-              : undefined}
+              : definition.key === SHORTCUTS_KEY
+                ? shortcutList
+                : undefined}
           note={definition.key === "player.replayGain" ? gainCoverage : undefined}
         />
       {/each}

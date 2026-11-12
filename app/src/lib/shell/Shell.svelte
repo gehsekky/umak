@@ -1,6 +1,7 @@
 <script lang="ts">
   // The app's frame: named regions that registered views fill.
   import { onMount } from "svelte";
+  import { changedShortcuts } from "../actions/keys";
   import { keyBelongsToElement, runShortcut, shortcutName } from "../actions/registry";
   import { player } from "../player/state.svelte";
   import { settings } from "../settings/state.svelte";
@@ -37,7 +38,7 @@
     if (event.target instanceof Element && event.target.closest("dialog")) return;
     const tag = event.target instanceof HTMLElement ? event.target.tagName : null;
     if (keyBelongsToElement(name, tag)) return;
-    if (runShortcut(name)) event.preventDefault();
+    if (runShortcut(name, changedShortcuts())) event.preventDefault();
   }
 </script>
 

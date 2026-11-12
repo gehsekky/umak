@@ -56,6 +56,15 @@ describe("settings sections", () => {
     expect(keys("volume")).toEqual([]);
   });
 
+  it("searches the text a setting's own control gives", () => {
+    const keys = (query: string) =>
+      sections(definitions, query, { theme: "Light Dark" }).flatMap((section) =>
+        section.settings.map((found) => found.key),
+      );
+    expect(keys("light")).toEqual(["theme"]);
+    expect(keys("theme dark")).toEqual(["theme"]);
+  });
+
   it("finds the settings changed from their defaults", () => {
     const values = { gain: value("gain", false), preamp: value("preamp", true) };
     expect(changedKeys(definitions, values)).toEqual(["gain"]);
