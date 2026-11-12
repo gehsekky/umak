@@ -777,7 +777,12 @@ impl Engines {
         start_ms: u64,
         paused: bool,
     ) -> Result<(), ApiError> {
-        lock(&self.shared.status).count = tracks.len() as u32;
+        {
+            // The engine confirms the place, but an edit made before it does needs it now.
+            let mut status = lock(&self.shared.status);
+            status.count = tracks.len() as u32;
+            status.index = u32::try_from(start).ok();
+        }
         self.send(&PlayerCommand::Load {
             tracks,
             start_index: start,
@@ -2071,6 +2076,19 @@ mod tests {
         fixture.signal(state(PlaybackState::Playing, 1, "b", 0));
         fixture.player.play_next(&["c".to_owned()]).unwrap();
         assert_eq!(queue_titles(&fixture), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn play_next_right_after_a_new_list_starts_goes_after_its_first_track() {
+        let fixture = fixture();
+        let ids = ["a".to_owned(), "b".to_owned()];
+        fixture.player.play_tracks(&ids, 0).unwrap();
+        fixture.signal(state(PlaybackState::Playing, 0, "a", 0));
+        // The engine has not reported the new list yet.
+        let ids = ["b".to_owned(), "a".to_owned(), "b".to_owned()];
+        fixture.player.play_tracks(&ids, 1).unwrap();
+        fixture.player.play_next(&["c".to_owned()]).unwrap();
+        assert_eq!(queue_titles(&fixture), ["b", "a", "c", "b"]);
     }
 
     #[test]
