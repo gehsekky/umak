@@ -1,5 +1,6 @@
 <script lang="ts">
   // The visualizer docked below the main view.
+  import { shortcutHint } from "../actions/keys";
   import { actionLabel, runAction } from "../actions/registry";
   import { app } from "../state/app.svelte";
   import { findVisualizer } from "../visuals/plugin";
@@ -17,12 +18,12 @@
         onclick={() => runAction("visuals.next", { place: "dock" })}>{plugin.label}</button
       >
       <button
-        title="{actionLabel('visuals.toggleFull')} (F)"
+        title="{actionLabel('visuals.toggleFull')}{shortcutHint('visuals.toggleFull')}"
         aria-label={actionLabel("visuals.toggleFull")}
         onclick={() => runAction("visuals.toggleFull")}>⛶</button
       >
       <button
-        title="{actionLabel('visuals.toggleDock')} (V)"
+        title="{actionLabel('visuals.toggleDock')}{shortcutHint('visuals.toggleDock')}"
         aria-label={actionLabel("visuals.toggleDock")}
         onclick={() => runAction("visuals.toggleDock")}>✕</button
       >

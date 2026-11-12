@@ -1,6 +1,7 @@
 <script lang="ts" generics="T">
   // Renders only the rows in view, so the length of the list does not affect drawing.
   import { onMount, type Snippet } from "svelte";
+  import { appearance } from "../theme/appearance.svelte";
 
   const OVERSCAN = 10;
   const FALLBACK_ROW_HEIGHT = 30;
@@ -43,10 +44,14 @@
     end = to;
   });
 
-  onMount(() => {
-    // The row height is a theme token, so the theme decides it.
+  $effect(() => {
+    // The row height is a theme token, so the theme decides it, and it changes with the theme.
+    void appearance.version;
     const token = getComputedStyle(container).getPropertyValue("--size-row");
     rowHeight = Number.parseFloat(token) || FALLBACK_ROW_HEIGHT;
+  });
+
+  onMount(() => {
     const observer = new ResizeObserver(() => {
       viewHeight = container.clientHeight;
     });

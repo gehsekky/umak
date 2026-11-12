@@ -854,6 +854,117 @@ fn a_sort_tag_overrides_the_computed_sort_value() {
     assert_eq!(album_artist, "bowie, david");
 }
 
+impl Library {
+    fn set(&self, key: &str, value: serde_json::Value) {
+        self.db
+            .write(|conn| crate::settings::write(conn, key, &value))
+            .unwrap();
+    }
+
+    fn sorts(&self, rel: &str) -> (String, String, String, String) {
+        self.query(|conn| {
+            conn.query_row(
+                "SELECT t.title_sort, t.artist_sort, t.album_sort, ar.sort_name
+                 FROM tracks t
+                 JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'artist'
+                 JOIN artists ar ON ar.id = ta.artist_id
+                 WHERE t.rel_path = ?1",
+                [rel],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+        })
+    }
+}
+
+#[test]
+fn the_file_types_and_skipped_folders_follow_the_settings() {
+    let lib = library();
+    lib.mp3("a/1.mp3", 1, &tagged("One", "Artist", "Album"));
+    lib.write("a/2.flac", &flac_bytes(2, &[("TITLE", "Two")]));
+    lib.mp3("Extras/3.mp3", 3, &tagged("Three", "Artist", "Album"));
+    lib.mp3("@eaDir/4.mp3", 4, &tagged("Four", "Artist", "Album"));
+    lib.scan();
+    assert_eq!(lib.count("SELECT count(*) FROM tracks"), 3);
+
+    lib.set("library.fileTypes", serde_json::json!(["flac"]));
+    lib.set("library.skippedFolders", serde_json::json!(["extras"]));
+    let report = lib.scan();
+    assert_eq!(report.files_found, 1);
+    assert!(lib.track("a/1.mp3").missing);
+    assert!(lib.track("Extras/3.mp3").missing);
+    assert!(!lib.track("a/2.flac").missing);
+
+    lib.set("library.fileTypes", serde_json::json!(["mp3", "flac"]));
+    lib.set("library.skippedFolders", serde_json::json!([]));
+    lib.scan();
+    assert_eq!(
+        lib.count("SELECT count(*) FROM tracks WHERE missing_since IS NULL"),
+        4
+    );
+}
+
+#[test]
+fn new_articles_sort_names_again_and_sort_tags_still_win() {
+    let lib = library();
+    lib.mp3(
+        "1.mp3",
+        1,
+        &tagged("Das Lied", "Die Toten Hosen", "The Album"),
+    );
+    lib.mp3(
+        "2.mp3",
+        2,
+        &[
+            ("TIT2", "The Song"),
+            ("TPE1", "The Band"),
+            ("TSOP", "The Band"),
+            ("TALB", "Other"),
+        ],
+    );
+    lib.scan();
+    assert_eq!(
+        lib.sorts("1.mp3"),
+        (
+            "das lied".to_owned(),
+            "die toten hosen".to_owned(),
+            "album".to_owned(),
+            "die toten hosen".to_owned()
+        )
+    );
+    // An unchanged library reads nothing again.
+    assert_eq!(lib.scan().unchanged, 2);
+
+    lib.set("library.sortArticles", serde_json::json!(["Die", "Das"]));
+    let report = lib.scan();
+    assert_eq!(report.unchanged, 0, "every file is read again");
+    assert_eq!(
+        lib.sorts("1.mp3"),
+        (
+            "lied".to_owned(),
+            "toten hosen".to_owned(),
+            "the album".to_owned(),
+            "toten hosen".to_owned()
+        )
+    );
+    // The tag said how to sort the artist; the title had no tag.
+    let (title, artist, _, artist_row) = lib.sorts("2.mp3");
+    assert_eq!(title, "the song");
+    assert_eq!(
+        (artist.as_str(), artist_row.as_str()),
+        ("the band", "the band")
+    );
+    let album_sort: String = lib.query(|conn| {
+        conn.query_row(
+            "SELECT a.sort_title FROM albums a JOIN tracks t ON t.album_id = a.id
+             WHERE t.rel_path = '1.mp3'",
+            [],
+            |row| row.get(0),
+        )
+    });
+    assert_eq!(album_sort, "the album");
+    assert_eq!(lib.scan().unchanged, 2, "sorted once");
+}
+
 #[test]
 fn a_canceled_scan_stops_early_and_the_next_scan_finishes_the_work() {
     let lib = library();

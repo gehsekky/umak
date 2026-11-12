@@ -10,6 +10,15 @@
   import type { Snippet } from "svelte";
   import { runAction } from "../actions/registry";
   import type { TrackRow } from "../api/generated/TrackRow";
+  import { settings } from "../settings/state.svelte";
+  import {
+    COLUMNS,
+    formatLastPlayed,
+    formatTrackNumber,
+    gridColumns,
+    shownColumns,
+    type ColumnId,
+  } from "./columns";
   import { formatDuration, formatQuality } from "./format";
   import { formatPlays, ratingForDigit } from "./rating";
   import StarRating from "./StarRating.svelte";
@@ -220,27 +229,65 @@
     }
   }
 
-  /** The optional columns go first when the list is narrow, so titles stay readable. */
-  const headers: { name: string; sort?: TrackSort; align?: "end"; optional?: boolean }[] = [
-    { name: "#", align: "end" },
-    { name: "Title", sort: "title" },
-    { name: "Artist", sort: "artist" },
-    { name: "Album", sort: "album" },
-    { name: "Year", align: "end", optional: true },
-    { name: "Time", align: "end" },
-    { name: "Format", optional: true },
-    { name: "Rating" },
-    { name: "Plays", align: "end", optional: true },
-  ];
+  const columns = $derived(shownColumns(settings.value("appearance.trackColumns")));
 </script>
 
-<div class="table" class:compact>
+{#snippet cell(column: ColumnId, item: R, index: number, info: TrackRow, isPlaying: boolean)}
+  {@const end = COLUMNS[column].align === "end"}
+  {@const optional = COLUMNS[column].optional}
+  {#if column === "number"}
+    <div class="end muted number" role="gridcell">{isPlaying ? "▶" : number(item, index)}</div>
+  {:else if column === "title"}
+    <div role="gridcell" title={info.title}>
+      <!-- First, so a long title cannot push it out of sight. -->
+      {#if info.missing}<span class="tag">Missing</span>{/if}
+      {info.title}
+    </div>
+  {:else if column === "artist"}
+    <div role="gridcell" title={info.artist}>{info.artist}</div>
+  {:else if column === "album"}
+    <div role="gridcell" title={info.album}>{info.album}</div>
+  {:else if column === "time"}
+    <div class="end muted time" role="gridcell">{formatDuration(info.durationMs)}</div>
+  {:else if column === "rating"}
+    <div role="gridcell">
+      <StarRating
+        rating={info.rating}
+        label="Rating of {info.title}"
+        onrate={(rating) => runAction("tracks.rate", { trackIds: [info.id], rating })}
+      />
+    </div>
+  {:else if column === "plays"}
+    {@const plays = formatPlays(info)}
+    <div class="end muted plays optional" role="gridcell" title={plays.title}>{plays.count}</div>
+  {:else}
+    <div class="muted" class:end class:optional class:time={column === "track"} role="gridcell">
+      {#if column === "track"}
+        {formatTrackNumber(info)}
+      {:else if column === "year"}
+        {info.year ?? ""}
+      {:else if column === "format"}
+        {formatQuality(info)}
+      {:else if column === "lastPlayed"}
+        {formatLastPlayed(info.lastPlayedAt)}
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
+<div
+  class="table"
+  class:compact
+  style:--columns={gridColumns(columns, false)}
+  style:--columns-narrow={gridColumns(columns, true)}
+>
   {#if !compact}<div class="header row" role="row">
-    {#each headers as header}
+    {#each columns as column (column)}
+      {@const header = COLUMNS[column]}
       <div class:end={header.align === "end"} class:optional={header.optional} role="columnheader">
         {#if header.sort && onsort}
           <button class="sort" onclick={() => onsort?.(header.sort as TrackSort)}>
-            {header.name}
+            {header.header}
             {#if sort?.sort === header.sort}
               <span aria-label={sort?.descending ? "descending" : "ascending"}>
                 {sort?.descending ? "▼" : "▲"}
@@ -248,7 +295,7 @@
             {/if}
           </button>
         {:else}
-          {header.name}
+          {header.header}
         {/if}
       </div>
     {/each}
@@ -292,34 +339,20 @@
             if (event.shiftKey) event.preventDefault();
           }}
         >
-          <div class="end muted number" role="gridcell">
-            {isPlaying ? "▶" : number(item, index)}
-          </div>
-          <div role="gridcell" title={compact ? `${info.title} - ${info.artist}` : info.title}>
-            <!-- First, so a long title cannot push it out of sight. -->
-            {#if info.missing}<span class="tag">Missing</span>{/if}
-            {info.title}
-            {#if compact}<span class="muted">{info.artist}</span>{/if}
-          </div>
-          {#if !compact}
-            <div role="gridcell" title={info.artist}>{info.artist}</div>
-            <div role="gridcell" title={info.album}>{info.album}</div>
-            <div class="end muted optional" role="gridcell">{info.year ?? ""}</div>
-          {/if}
-          <div class="end muted time" role="gridcell">{formatDuration(info.durationMs)}</div>
-          {#if !compact}
-            {@const plays = formatPlays(info)}
-            <div class="muted optional" role="gridcell">{formatQuality(info)}</div>
-            <div role="gridcell">
-              <StarRating
-                rating={info.rating}
-                label="Rating of {info.title}"
-                onrate={(rating) => runAction("tracks.rate", { trackIds: [info.id], rating })}
-              />
+          {#if compact}
+            <div class="end muted number" role="gridcell">
+              {isPlaying ? "▶" : number(item, index)}
             </div>
-            <div class="end muted plays optional" role="gridcell" title={plays.title}>
-              {plays.count}
+            <div role="gridcell" title="{info.title} - {info.artist}">
+              {#if info.missing}<span class="tag">Missing</span>{/if}
+              {info.title}
+              <span class="muted">{info.artist}</span>
             </div>
+            <div class="end muted time" role="gridcell">{formatDuration(info.durationMs)}</div>
+          {:else}
+            {#each columns as column (column)}
+              {@render cell(column, item, index, info, isPlaying)}
+            {/each}
           {/if}
         </div>
       {:else}
@@ -341,7 +374,7 @@
 
   .row {
     display: grid;
-    grid-template-columns: 4em 4fr 3fr 3fr 4em 5em 7em 5.5em 3em;
+    grid-template-columns: var(--columns);
     gap: var(--space-sm);
     align-items: center;
     padding: 0 var(--space-md) 0 var(--space-sm);
@@ -349,7 +382,7 @@
 
   @container (max-width: 800px) {
     .row {
-      grid-template-columns: 3em 4fr 3fr 3fr 4em 5.5em;
+      grid-template-columns: var(--columns-narrow);
     }
 
     .optional {

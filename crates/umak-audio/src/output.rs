@@ -27,7 +27,24 @@ pub trait AudioOutput {
     fn start(self: Box<Self>, renderer: Renderer) -> Result<Box<dyn Any>, String>;
 }
 
-/// The system's default output device.
+fn device_name(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|description| description.name().to_owned())
+        .unwrap_or_else(|_| "default output".to_owned())
+}
+
+/// The names of the output devices there are now, as `CpalOutput::open` takes them.
+pub fn output_devices() -> Result<Vec<String>, String> {
+    let devices = cpal::default_host()
+        .output_devices()
+        .map_err(|error| error.to_string())?;
+    let mut names: Vec<String> = devices.map(|device| device_name(&device)).collect();
+    names.dedup();
+    Ok(names)
+}
+
+/// An output device, through cpal.
 pub struct CpalOutput {
     device: cpal::Device,
     config: StreamConfig,
@@ -36,20 +53,31 @@ pub struct CpalOutput {
 }
 
 impl CpalOutput {
+    /// The system's default output device.
     pub fn default_device() -> Result<Self, String> {
+        Self::open(None)
+    }
+
+    /// The device of this name, or the system's default if there is none by that name. The
+    /// format names the one opened.
+    pub fn open(name: Option<&str>) -> Result<Self, String> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or("no audio output device was found")?;
+        let named = name.and_then(|name| {
+            host.output_devices()
+                .ok()?
+                .find(|device| device_name(device) == name)
+        });
+        let device = match named {
+            Some(device) => device,
+            None => host
+                .default_output_device()
+                .ok_or("no audio output device was found")?,
+        };
         let supported = device
             .default_output_config()
             .map_err(|error| error.to_string())?;
-        let name = device
-            .description()
-            .map(|description| description.name().to_owned())
-            .unwrap_or_else(|_| "default output".to_owned());
         let format = OutputFormat {
-            device: name,
+            device: device_name(&device),
             sample_rate: supported.sample_rate(),
             channels: supported.channels(),
         };

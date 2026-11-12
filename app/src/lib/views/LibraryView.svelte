@@ -4,6 +4,7 @@
   import { call } from "../api/client";
   import type { TrackRow } from "../api/generated/TrackRow";
   import type { TrackSort } from "../api/generated/TrackSort";
+  import { activateTrack } from "../lists/activate";
   import { countOf } from "../lists/format";
   import { PagedList, type Source } from "../lists/pagedList.svelte";
   import { Selection } from "../lists/selection.svelte";
@@ -79,12 +80,17 @@
     });
   });
 
-  /** Plays the selection if the row is part of it, and otherwise just that song. */
+  /**
+   * Does what the settings say. Playing from here plays the selection if the row is part of
+   * it, and otherwise just that song.
+   */
   function activate(row: TrackRow): void {
-    const trackIds =
-      selection.size > 1 && selection.has(row.id) ? ([...selection.keys] as string[]) : [row.id];
-    const startIndex = Math.max(trackIds.indexOf(row.id), 0);
-    void runAction("player.playTracks", { trackIds, startIndex });
+    const selected = () => (selection.has(row.id) ? ([...selection.keys] as string[]) : []);
+    void activateTrack(row.id, selected, () => {
+      const trackIds = selection.size > 1 && selection.has(row.id) ? selected() : [row.id];
+      const startIndex = Math.max(trackIds.indexOf(row.id), 0);
+      return runAction("player.playTracks", { trackIds, startIndex });
+    });
   }
 </script>
 

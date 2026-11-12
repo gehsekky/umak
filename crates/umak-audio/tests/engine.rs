@@ -173,6 +173,7 @@ impl Harness {
             tracks,
             start_index,
             start_ms,
+            paused: false,
         });
     }
 
@@ -456,6 +457,57 @@ fn previous_restarts_a_track_that_has_played_for_a_while() {
 }
 
 #[test]
+fn previous_goes_back_by_the_threshold_it_is_given() {
+    let mut player = harness();
+    let tracks = vec![
+        player.file("a", 48_000, &[(440.0, 1.0)]),
+        player.file("b", 48_000, &[(440.0, 8.0)]),
+    ];
+    player
+        .engine
+        .send(PlayerCommand::SetRestartThreshold { ms: 0 });
+    player.load(tracks, 1, 4000);
+    player.wait_for_track("b");
+    player.engine.send(PlayerCommand::Previous);
+    player.wait_for_track("a");
+}
+
+#[test]
+fn a_list_loaded_paused_waits_at_its_place_for_play() {
+    let mut player = harness();
+    let tracks = vec![player.file("a", 48_000, &[(440.0, 4.0)])];
+    player.engine.send(PlayerCommand::Load {
+        tracks,
+        start_index: 0,
+        start_ms: 1000,
+        paused: true,
+    });
+    let event = player.wait_for(|event| matches!(event, PlayerEvent::State { .. }));
+    assert!(matches!(
+        event,
+        PlayerEvent::State {
+            state: PlaybackState::Paused,
+            position_ms: 1000,
+            ..
+        }
+    ));
+    thread::sleep(Duration::from_millis(100));
+    player.take_audio();
+    thread::sleep(Duration::from_millis(50));
+    assert!(player.take_audio().iter().all(|sample| *sample == 0.0));
+    player.engine.send(PlayerCommand::Play);
+    player.wait_for(|event| {
+        matches!(
+            event,
+            PlayerEvent::State {
+                state: PlaybackState::Playing,
+                ..
+            }
+        )
+    });
+}
+
+#[test]
 fn a_track_that_cannot_open_is_reported_and_skipped() {
     let mut player = harness();
     let good = player.file("good", 48_000, &[(440.0, 0.2)]);
@@ -525,6 +577,7 @@ fn position_events_advance_while_playing() {
         }],
         start_index: 0,
         start_ms: 0,
+        paused: false,
     });
     let started = Instant::now();
     let mut positions = Vec::new();
@@ -753,6 +806,7 @@ fn the_current_track_and_position_change_when_the_join_is_heard() {
         tracks,
         start_index: 0,
         start_ms: 0,
+        paused: false,
     });
     let mut started = None;
     loop {

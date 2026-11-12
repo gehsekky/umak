@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import type { VisualFrame } from "../api/generated/VisualFrame";
   import { playerClient } from "../player/client";
+  import { appearance } from "../theme/appearance.svelte";
   import type { Unwatch } from "../player/visuals";
   import type { VisualColors, Visualizer, VisualizerPlugin } from "./plugin";
 
@@ -54,6 +55,13 @@
   function wake(): void {
     request ??= requestAnimationFrame(draw);
   }
+
+  $effect(() => {
+    // The colors are read again once a theme changes them.
+    void appearance.version;
+    colors = null;
+    wake();
+  });
 
   function receive(frame: VisualFrame): void {
     visualizer?.receive(frame);

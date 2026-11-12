@@ -27,7 +27,7 @@ const IDLE_WAIT: Duration = Duration::from_millis(20);
 const FULL_QUEUE_WAIT: Duration = Duration::from_millis(5);
 const FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
 const POSITION_INTERVAL: Duration = Duration::from_millis(250);
-/// Past this point, Previous restarts the track instead of going back one.
+/// Past this point, Previous restarts the track instead of going back one, unless told otherwise.
 const RESTART_THRESHOLD_MS: u64 = 3000;
 
 type EventSink = Box<dyn FnMut(PlayerEvent) + Send>;
@@ -147,6 +147,9 @@ struct Worker {
     decoded: Vec<f32>,
     mapped: Vec<f32>,
     last_position: Instant,
+    restart_threshold_ms: u64,
+    /// The next track started waits, paused, at its start position.
+    start_paused: bool,
     _stream: Box<dyn Any>,
 }
 
@@ -198,6 +201,8 @@ impl Worker {
             decoded: Vec::new(),
             mapped: Vec::new(),
             last_position: Instant::now(),
+            restart_threshold_ms: RESTART_THRESHOLD_MS,
+            start_paused: false,
             _stream: stream,
         })
     }
@@ -220,8 +225,8 @@ impl Worker {
                 Err(RecvTimeoutError::Timeout) => {}
             }
             if self.shared.take_output_failed() {
-                (self.events)(PlayerEvent::Error {
-                    message: "the audio output stopped working".to_owned(),
+                (self.events)(PlayerEvent::OutputFailed {
+                    message: format!("{} stopped working", self.format.device),
                 });
             }
             self.report_position();
@@ -234,9 +239,12 @@ impl Worker {
                 tracks,
                 start_index,
                 start_ms,
+                paused,
             } => {
                 self.tracks = tracks;
+                self.start_paused = paused;
                 self.start_track(start_index, start_ms);
+                self.start_paused = false;
             }
             PlayerCommand::EditList { tracks, origin } => self.edit_list(tracks, &origin),
             PlayerCommand::Play => match (self.state, self.index) {
@@ -269,7 +277,8 @@ impl Worker {
                 }
             }
             PlayerCommand::Previous => {
-                if self.position_ms() > RESTART_THRESHOLD_MS {
+                let threshold = self.restart_threshold_ms;
+                if threshold > 0 && self.position_ms() > threshold {
                     self.seek(0);
                 } else if let Some(index) = self.index {
                     self.start_track(index.saturating_sub(1), 0);
@@ -282,6 +291,7 @@ impl Worker {
                 preamp_db,
             } => self.shared.set_gain(replay_gain, preamp_db),
             PlayerCommand::SetEq { enabled, bands_db } => self.shared.set_eq(enabled, &bands_db),
+            PlayerCommand::SetRestartThreshold { ms } => self.restart_threshold_ms = ms,
             PlayerCommand::Quit => {}
         }
     }
@@ -410,7 +420,12 @@ impl Worker {
                 });
                 self.queue_gain(played, opened);
                 self.index = Some(opened);
-                self.set_state(PlaybackState::Playing);
+                if self.start_paused {
+                    self.shared.set_paused(true);
+                    self.set_state(PlaybackState::Paused);
+                } else {
+                    self.set_state(PlaybackState::Playing);
+                }
             }
             None => {
                 self.index = None;

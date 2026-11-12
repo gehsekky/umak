@@ -3,6 +3,7 @@
   // over it. The input is invisible but takes the pointer and the keyboard, so seeking works
   // as a slider does, with or without a waveform yet.
   import { onMount } from "svelte";
+  import { appearance } from "../theme/appearance.svelte";
   import { playedShare, resample } from "./waveform";
 
   let {
@@ -20,7 +21,7 @@
     positionMs: number;
     durationMs: number;
     disabled: boolean;
-    title: string;
+    title?: string;
     oninput: (ms: number) => void;
     onchange: (ms: number) => void;
   } = $props();
@@ -36,6 +37,8 @@
   $effect(() => {
     const context = canvas?.getContext("2d");
     const { width, height } = size;
+    // The colors are theme tokens, so a new theme draws again.
+    void appearance.version;
     if (!context || !canvas || width === 0) return;
     const scale = window.devicePixelRatio || 1;
     canvas.width = Math.round(width * scale);

@@ -1,19 +1,57 @@
 <script lang="ts">
   // The app's frame: named regions that registered views fill.
   import { onMount } from "svelte";
+  import { changedShortcuts } from "../actions/keys";
   import { keyBelongsToElement, runShortcut, shortcutName } from "../actions/registry";
   import { player } from "../player/state.svelte";
+  import { settings } from "../settings/state.svelte";
+  import { appearance } from "../theme/appearance.svelte";
   import { app } from "../state/app.svelte";
+  import { LAST_VIEW_KEY, restorable, startingView } from "../state/startView";
   import { viewsIn } from "./regions";
 
   const MainView = $derived(viewsIn("main").find((view) => view.id === app.view.kind)?.component);
 
   let startError = $state<string | null>(null);
 
+  /** The view the app was left on, read before this run keeps its own. */
+  const keptView: unknown = (() => {
+    try {
+      const saved = localStorage.getItem(LAST_VIEW_KEY);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  $effect(() => {
+    const view = restorable(app.view);
+    if (!view) return;
+    try {
+      localStorage.setItem(LAST_VIEW_KEY, JSON.stringify(view));
+    } catch {
+      // Storage can be unavailable; the app then opens as the setting says, or on the library.
+    }
+  });
+
   onMount(() => {
-    const stops: (() => void)[] = [];
-    Promise.all([app.start(), player.start()])
-      .then((unlisten) => stops.push(...unlisten))
+    const stops: (() => void)[] = [appearance.start()];
+    Promise.all([app.start(), player.start(), settings.start()])
+      .then(([stopApp, stopPlayer, loaded]) => {
+        stops.push(stopApp, stopPlayer, loaded.stop);
+        // Unless a view was already chosen while starting.
+        if (app.view.kind === "library") {
+          const playlistIds = app.playlists.map((playlist) => playlist.id);
+          app.view = startingView(settings.value("behavior.startView"), keptView, playlistIds);
+        }
+        if (loaded.problems > 0) {
+          app.fail(
+            loaded.problems === 1
+              ? "A saved setting made no sense, so its default is used. Settings shows which."
+              : `${loaded.problems} saved settings made no sense, so their defaults are used. Settings shows which.`,
+          );
+        }
+      })
       .catch((failure: { message?: string }) => {
         startError = failure.message ?? String(failure);
       });
@@ -26,7 +64,7 @@
     if (event.target instanceof Element && event.target.closest("dialog")) return;
     const tag = event.target instanceof HTMLElement ? event.target.tagName : null;
     if (keyBelongsToElement(name, tag)) return;
-    if (runShortcut(name)) event.preventDefault();
+    if (runShortcut(name, changedShortcuts())) event.preventDefault();
   }
 </script>
 

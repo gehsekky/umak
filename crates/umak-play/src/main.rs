@@ -132,6 +132,7 @@ fn play_files(args: &Args) -> ExitCode {
         tracks,
         start_index: 0,
         start_ms: 0,
+        paused: false,
     });
     for event in events {
         match event {
@@ -139,7 +140,9 @@ fn play_files(args: &Args) -> ExitCode {
                 state: PlaybackState::Stopped,
                 ..
             } => return ExitCode::SUCCESS,
-            PlayerEvent::Error { .. } => return ExitCode::FAILURE,
+            PlayerEvent::Error { .. } | PlayerEvent::OutputFailed { .. } => {
+                return ExitCode::FAILURE;
+            }
             _ => {}
         }
     }

@@ -26,13 +26,15 @@ use crate::duplicates::{self, DuplicateMatch, DuplicatePage};
 use crate::jobs::{JobInfo, JobKind, JobOutcome, JobRunner};
 use crate::library::{self, TrackPage, TrackSort};
 use crate::player::{
-    BackendFactory, EqPresets, GainCoverage, Player, PlayerAction, PlayerSettings, PlayerStatus,
-    no_engine,
+    self, BackendFactory, EqPresets, GainCoverage, Player, PlayerAction, PlayerSettings,
+    PlayerStatus, no_engine,
 };
 use crate::playlists::{self, Playlist, PlaylistPage, SmartPreview};
 use crate::scan::{self, ScanError, ScanOptions};
+use crate::settings::{self, SettingDefinition, SettingValue};
 use crate::smart::{self, SmartRule};
 use crate::tagedit::{self, TagEdit, TagEditItemPage, TagEditPage, TrackEdits, TrackTagValuesList};
+use crate::themes::{self, UserThemes};
 use crate::transfer::{self, ExportSummary, ImportPreview, RootChoice};
 use crate::user_data;
 use crate::waveforms::{TrackWaveform, Waveforms};
@@ -111,6 +113,10 @@ pub enum CoreEvent {
     },
     /// The saved equalizer presets changed.
     EqPresetsChanged,
+    /// Settings changed, each given with its new value.
+    SettingsChanged {
+        settings: Vec<SettingValue>,
+    },
     /// Sent a few times a second during playback.
     #[serde(rename_all = "camelCase")]
     PlayerPosition {
@@ -220,6 +226,57 @@ impl Core {
         })
     }
 
+    /// Saves settings, given as they will be stored, and has whatever follows them take them up.
+    fn change_settings(
+        &self,
+        changes: &[(&str, Value)],
+        save: impl FnOnce(&Connection) -> Result<Vec<SettingValue>, ApiError>,
+    ) -> Result<Vec<SettingValue>, ApiError> {
+        let for_player: Vec<(&str, &Value)> = changes
+            .iter()
+            .filter(|(key, _)| player::is_player_setting(key))
+            .map(|(key, value)| (*key, value))
+            .collect();
+        if !for_player.is_empty() {
+            self.player.apply(&for_player)?;
+        }
+        let saved = self.db.write(|conn| {
+            let tx = conn.transaction()?;
+            let saved = save(&tx)?;
+            tx.commit()?;
+            Ok::<_, ApiError>(saved)
+        })?;
+        self.events.emit(&CoreEvent::SettingsChanged {
+            settings: saved.clone(),
+        });
+        if !for_player.is_empty() {
+            self.player.settings_changed()?;
+        }
+        let changed = |wanted: &[&str]| changes.iter().any(|(key, _)| wanted.contains(key));
+        if changed(&[player::OUTPUT_DEVICE_KEY]) {
+            self.player.output_changed();
+        }
+        if changed(&[settings::COVER_NAMES_KEY]) {
+            self.art.cover_names_changed()?;
+            self.events.emit(&CoreEvent::LibraryChanged);
+        }
+        let scan_keys = [
+            settings::FILE_TYPES_KEY,
+            settings::SKIPPED_FOLDERS_KEY,
+            settings::SORT_ARTICLES_KEY,
+        ];
+        if changed(&scan_keys) {
+            // A scan already running keeps the rules it started with; the next one follows.
+            match (StartScan { roots: None }).run(self) {
+                Err(error) if error.code == ErrorCode::Conflict => {}
+                result => {
+                    result?;
+                }
+            }
+        }
+        Ok(saved)
+    }
+
     /// The cached picture an image name such as `<hash>-small` stands for, for transports that
     /// serve pictures by URL. Pictures never go through commands.
     pub fn art_image(&self, name: &str) -> Option<PathBuf> {
@@ -243,6 +300,17 @@ impl Core {
     /// while the app was closed. For the app; tools that only scan leave it off.
     pub fn keep_art_cached(&self) {
         self.art.keep_filled();
+    }
+
+    /// Loads the last session's queue at its place, paused, if the settings ask for that. For
+    /// the app at start; it opens the output device, so tools leave it off.
+    pub fn resume_at_start(&self) -> Result<(), ApiError> {
+        self.player.resume_at_start()
+    }
+
+    /// A setting's value, for a part of the app outside the core that follows one.
+    pub fn setting(&self, key: &str) -> Result<Value, ApiError> {
+        self.db.read(|conn| settings::value(conn, key))
     }
 
     fn ffmpeg(&self) -> Result<Arc<Ffmpeg>, ApiError> {
@@ -344,10 +412,15 @@ commands![
     GetTrackPictures,
     SetPlayerGain,
     GetGainCoverage,
+    ListOutputDevices,
     SetPlayerEq,
     GetEqPresets,
     SaveEqPreset,
     DeleteEqPreset,
+    ListSettings,
+    SetSetting,
+    ResetSettings,
+    GetUserThemes,
     ExportLibrary,
     PreviewImport,
     StartImport,
@@ -1350,6 +1423,7 @@ impl Command for StartImport {
         let (export, choices) = transfer::check_import(Path::new(&self.path), &self.roots)?;
         let db = Arc::clone(&core.db);
         let events = Arc::clone(&core.events);
+        let apply_player_settings = core.player.settings_applier();
         let id = core.jobs.start(JobKind::Import, move |context| {
             let mut report_progress = |progress: scan::ScanProgress| {
                 context.progress(progress.done, progress.total);
@@ -1369,6 +1443,12 @@ impl Command for StartImport {
             events.emit(&CoreEvent::LibraryRootsChanged);
             events.emit(&CoreEvent::LibraryChanged);
             events.emit(&CoreEvent::PlaylistsChanged);
+            if report.settings_added > 0 {
+                if let Ok(settings) = db.read(settings::all) {
+                    events.emit(&CoreEvent::SettingsChanged { settings });
+                }
+                apply_player_settings();
+            }
             Ok(JobOutcome {
                 canceled: report.canceled,
                 import: Some(report),
@@ -1912,6 +1992,30 @@ impl Command for SetPlayerGain {
     }
 }
 
+/// The output devices there are now, by the names the output device setting takes.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListOutputDevices {}
+
+#[derive(Debug, Serialize, TS)]
+pub struct OutputDevices {
+    pub devices: Vec<String>,
+}
+
+impl Command for ListOutputDevices {
+    const NAME: &'static str = "player.outputDevices";
+    type Output = OutputDevices;
+
+    fn run(self, _core: &Core) -> Result<OutputDevices, ApiError> {
+        #[cfg(feature = "engine")]
+        let devices = umak_audio::output::output_devices()
+            .map_err(|message| ApiError::new(ErrorCode::Internal, message))?;
+        #[cfg(not(feature = "engine"))]
+        let devices = Vec::new();
+        Ok(OutputDevices { devices })
+    }
+}
+
 #[derive(Debug, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct GetGainCoverage {}
@@ -1984,6 +2088,107 @@ impl Command for DeleteEqPreset {
 
     fn run(self, core: &Core) -> Result<EqPresets, ApiError> {
         core.player.delete_eq_preset(&self.name)
+    }
+}
+
+/// Every setting, how to show it, and its value.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListSettings {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+pub struct SettingList {
+    pub definitions: Vec<SettingDefinition>,
+    pub values: Vec<SettingValue>,
+}
+
+impl Command for ListSettings {
+    const NAME: &'static str = "settings.list";
+    type Output = SettingList;
+
+    fn run(self, core: &Core) -> Result<SettingList, ApiError> {
+        Ok(SettingList {
+            definitions: settings::definitions(),
+            values: core.db.read(settings::all)?,
+        })
+    }
+}
+
+/// Sets one setting. It applies at once and is saved. A number out of range is brought into
+/// range; any other value the setting does not allow is refused.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SetSetting {
+    pub key: String,
+    #[ts(type = "unknown")]
+    pub value: Value,
+}
+
+impl Command for SetSetting {
+    const NAME: &'static str = "settings.set";
+    type Output = SettingValue;
+
+    fn run(self, core: &Core) -> Result<SettingValue, ApiError> {
+        let value = settings::check(&self.key, &self.value)?;
+        let key = self.key.as_str();
+        let mut saved = core.change_settings(&[(key, value.clone())], |conn| {
+            Ok(vec![settings::write(conn, key, &value)?])
+        })?;
+        Ok(saved.remove(0))
+    }
+}
+
+/// Puts settings back to their defaults, such as one, or every one in a section.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ResetSettings {
+    pub keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+pub struct SettingValues {
+    pub settings: Vec<SettingValue>,
+}
+
+impl Command for ResetSettings {
+    const NAME: &'static str = "settings.reset";
+    type Output = SettingValues;
+
+    fn run(self, core: &Core) -> Result<SettingValues, ApiError> {
+        let definitions = settings::definitions();
+        let mut changes = Vec::new();
+        for key in &self.keys {
+            let Some(definition) = definitions.iter().find(|definition| definition.key == *key)
+            else {
+                return Err(ApiError::new(
+                    ErrorCode::NotFound,
+                    format!("there is no setting {key}"),
+                ));
+            };
+            changes.push((key.as_str(), definition.default.clone()));
+        }
+        let settings = core.change_settings(&changes, |conn| {
+            changes
+                .iter()
+                .map(|(key, _)| settings::reset(conn, key))
+                .collect()
+        })?;
+        Ok(SettingValues { settings })
+    }
+}
+
+/// The theme files in the themes folder beside the database, which is made if it is missing.
+/// The UI checks each against its tokens.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetUserThemes {}
+
+impl Command for GetUserThemes {
+    const NAME: &'static str = "appearance.themes";
+    type Output = UserThemes;
+
+    fn run(self, core: &Core) -> Result<UserThemes, ApiError> {
+        Ok(themes::read_folder(&themes::folder(&core.db)))
     }
 }
 
@@ -2386,6 +2591,12 @@ mod tests {
         )
         .unwrap();
         dispatch(&first.core, "playlists.create", json!({ "name": "Mix" })).unwrap();
+        dispatch(
+            &first.core,
+            "settings.set",
+            json!({ "key": "player.replayGain", "value": "track" }),
+        )
+        .unwrap();
 
         let file = first.dir.path().join("export.json");
         let file = file.to_str().unwrap();
@@ -2434,9 +2645,91 @@ mod tests {
         let events = second.events.0.lock().unwrap();
         assert!(events.contains(&CoreEvent::PlaylistsChanged));
         assert!(events.contains(&CoreEvent::LibraryRootsChanged));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            CoreEvent::PlayerSettingsChanged { settings }
+                if settings.replay_gain == ReplayGainMode::Track
+        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::SettingsChanged { .. }))
+        );
         drop(events);
         let playlists = dispatch(&second.core, "playlists.list", json!({})).unwrap();
         assert_eq!(playlists["playlists"][0]["name"], "Mix");
+    }
+
+    #[test]
+    fn settings_are_listed_set_and_reset_and_the_player_follows() {
+        let fixture = fixture();
+        let list = dispatch(&fixture.core, "settings.list", json!({})).unwrap();
+        let definitions = list["definitions"].as_array().unwrap();
+        let values = list["values"].as_array().unwrap();
+        assert_eq!(definitions.len(), values.len());
+        let preamp = definitions
+            .iter()
+            .find(|definition| definition["key"] == "player.preampDb")
+            .unwrap();
+        assert_eq!(preamp["kind"]["type"], "number");
+        assert_eq!(preamp["kind"]["unit"], "dB");
+
+        let set = |key: &str, value: Value| {
+            dispatch(
+                &fixture.core,
+                "settings.set",
+                json!({ "key": key, "value": value }),
+            )
+        };
+        let saved = set("player.preampDb", json!(-30)).unwrap();
+        assert_eq!(saved["value"], json!(-12.0));
+        assert_eq!(saved["isDefault"], false);
+        set("player.replayGain", json!("album")).unwrap();
+        let player = fixture.core.player.settings().unwrap();
+        assert_eq!(player.preamp_db, -12.0);
+        assert_eq!(player.replay_gain, ReplayGainMode::Album);
+        assert!(
+            fixture
+                .events
+                .0
+                .lock()
+                .unwrap()
+                .contains(&CoreEvent::PlayerSettingsChanged { settings: player })
+        );
+
+        assert_eq!(
+            error_code(set("player.replayGain", json!(3))),
+            ErrorCode::InvalidArgs
+        );
+        assert_eq!(error_code(set("no.such", json!(3))), ErrorCode::NotFound);
+
+        let reset = dispatch(
+            &fixture.core,
+            "settings.reset",
+            json!({ "keys": ["player.preampDb", "player.replayGain"] }),
+        )
+        .unwrap();
+        let reset = reset["settings"].as_array().unwrap();
+        assert!(reset.iter().all(|setting| setting["isDefault"] == true));
+        assert_eq!(
+            fixture.core.player.settings().unwrap(),
+            PlayerSettings::default()
+        );
+        let last = fixture.events.0.lock().unwrap().last().cloned();
+        assert_eq!(
+            last,
+            Some(CoreEvent::PlayerSettingsChanged {
+                settings: PlayerSettings::default()
+            })
+        );
+        assert_eq!(
+            error_code(dispatch(
+                &fixture.core,
+                "settings.reset",
+                json!({ "keys": ["player.eq", "no.such"] }),
+            )),
+            ErrorCode::NotFound
+        );
     }
 
     #[test]

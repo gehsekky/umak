@@ -2,6 +2,7 @@
   // A grid of equal tiles that draws only the rows in view, so the number of tiles does not
   // affect drawing. Tiles are a square picture with a caption; the theme sets their sizes.
   import { onMount, tick, type Snippet } from "svelte";
+  import { appearance } from "../theme/appearance.svelte";
   import { gridLayout, visibleRows } from "./grid";
 
   const OVERSCAN_ROWS = 2;
@@ -49,10 +50,15 @@
     return Number.parseFloat(getComputedStyle(container).getPropertyValue(name)) || fallback;
   }
 
-  onMount(() => {
+  $effect(() => {
+    // Theme tokens, which change with the theme.
+    void appearance.version;
     minTile = token("--size-album-tile", FALLBACK_TILE);
     caption = token("--size-album-caption", FALLBACK_CAPTION);
     gap = token("--space-md", FALLBACK_GAP);
+  });
+
+  onMount(() => {
     const observer = new ResizeObserver(() => {
       viewWidth = container.clientWidth;
       viewHeight = container.clientHeight;

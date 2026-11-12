@@ -266,7 +266,7 @@ pub fn raw_io(
     let mut paths = Vec::new();
     for folder in folders {
         let root = Path::new(folder);
-        for file in walk::walk(root, "").files {
+        for file in walk::walk(root, "", &walk::WalkRules::default()).files {
             paths.push(root.join(file.rel_path));
         }
     }

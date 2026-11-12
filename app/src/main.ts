@@ -1,9 +1,10 @@
 import { mount } from "svelte";
 import App from "./App.svelte";
 import "./app.css";
-import { applyTheme, selectTheme } from "./lib/theme/theme";
+import { startingTokens } from "./lib/theme/appearance.svelte";
+import { applyTokens } from "./lib/theme/theme";
 
-applyTheme(selectTheme(import.meta.env.VITE_UMAK_THEME));
+applyTokens(startingTokens());
 
 const target = document.getElementById("app");
 if (!target) {

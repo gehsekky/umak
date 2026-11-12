@@ -29,6 +29,7 @@ use ts_rs::TS;
 
 use crate::api::{ApiError, CoreEvent, ErrorCode, EventSink};
 use crate::db::{Database, DbError};
+use crate::settings;
 
 /// The sizes kept of each picture, in pixels along the longer side: for grids and lists, and
 /// for the player and the system's media controls. Smaller pictures are not enlarged.
@@ -66,8 +67,9 @@ impl ArtSize {
 }
 
 const JPEG_QUALITY: u8 = 85;
-/// Images in a folder taken as its art, in order of preference, compared ignoring case.
-const FOLDER_NAMES: [&str; 3] = ["cover", "folder", "front"];
+/// Images in a folder taken as its art, in order of preference, compared ignoring case, unless
+/// the settings give others.
+pub const FOLDER_NAMES: [&str; 3] = ["cover", "folder", "front"];
 const FOLDER_EXTENSIONS: [&str; 3] = ["jpg", "jpeg", "png"];
 /// Past a tag, how far to look for the audio. Real files pad beyond Lofty's default.
 const MAX_JUNK_BYTES: usize = 1024 * 1024;
@@ -158,8 +160,8 @@ fn embedded_picture(path: &Path) -> Result<Option<Vec<u8>>, String> {
     Ok(chosen.map(|picture| picture.data().to_vec()))
 }
 
-/// The art image in a folder, if it has one.
-fn folder_image(folder: &Path) -> Option<PathBuf> {
+/// The art image in a folder, if it has one, by the names given, lowercase.
+fn folder_image(folder: &Path, names: &[String]) -> Option<PathBuf> {
     let mut found: Vec<(usize, PathBuf)> = fs::read_dir(folder)
         .ok()?
         .filter_map(Result::ok)
@@ -167,7 +169,7 @@ fn folder_image(folder: &Path) -> Option<PathBuf> {
             let path = entry.path();
             let stem = path.file_stem()?.to_str()?.to_lowercase();
             let extension = path.extension()?.to_str()?.to_lowercase();
-            let rank = FOLDER_NAMES.iter().position(|name| *name == stem)?;
+            let rank = names.iter().position(|name| *name == stem)?;
             FOLDER_EXTENSIONS
                 .contains(&extension.as_str())
                 .then_some((rank, path))
@@ -317,7 +319,7 @@ struct Found {
 /// Remembers each folder's image while working through an album, so it is read once.
 type FolderArt = HashMap<PathBuf, Option<String>>;
 
-fn find(path: &Path, folder: &Path, folders: &mut FolderArt) -> Found {
+fn find(path: &Path, folder: &Path, folders: &mut FolderArt, names: &[String]) -> Found {
     let mut error = None;
     match embedded_picture(path) {
         Ok(Some(bytes)) => match store(folder, &bytes) {
@@ -338,7 +340,7 @@ fn find(path: &Path, folder: &Path, folders: &mut FolderArt) -> Found {
     let in_folder = folders
         .entry(parent)
         .or_insert_with_key(|parent| {
-            let image = folder_image(parent)?;
+            let image = folder_image(parent, names)?;
             let bytes = fs::read(image).ok()?;
             store(folder, &bytes).ok()
         })
@@ -532,6 +534,20 @@ impl ArtCache {
         self.fill();
     }
 
+    /// Forgets what was found, or not found, in folders, so they are looked through again by
+    /// the names now in the settings.
+    pub fn cover_names_changed(&self) -> Result<(), ApiError> {
+        self.shared.db.write(|conn| {
+            conn.execute(
+                "DELETE FROM track_art WHERE source IN ('folder', 'none')",
+                [],
+            )
+            .map_err(DbError::from)
+        })?;
+        self.library_changed();
+        Ok(())
+    }
+
     /// Fills in tracks added or changed, if the cache is being kept filled.
     pub fn library_changed(&self) {
         if self.shared.filling.load(Ordering::SeqCst) {
@@ -625,7 +641,10 @@ fn request(shared: &Shared, track_id: &str) -> Result<(), ApiError> {
         return Ok(());
     };
     if stored.is_none() && file.path.is_file() {
-        let found = find(&file.path, &shared.folder, &mut FolderArt::new());
+        let names = shared
+            .db
+            .read(|conn| Ok::<_, ApiError>(settings::cover_names(conn)))?;
+        let found = find(&file.path, &shared.folder, &mut FolderArt::new(), &names);
         shared
             .db
             .write(|conn| save(conn, &file, &found).map_err(DbError::from))?;
@@ -657,6 +676,9 @@ fn backfill(shared: &Shared, after: &mut i64) -> Result<(), ApiError> {
         lock(&shared.queue).backfill = false;
         return Ok(());
     }
+    let names = shared
+        .db
+        .read(|conn| Ok::<_, ApiError>(settings::cover_names(conn)))?;
     let mut folders = FolderArt::new();
     let mut done = Vec::new();
     let mut reported = Instant::now();
@@ -668,7 +690,7 @@ fn backfill(shared: &Shared, after: &mut i64) -> Result<(), ApiError> {
         if !file.path.is_file() {
             continue;
         }
-        let found = find(&file.path, &shared.folder, &mut folders);
+        let found = find(&file.path, &shared.folder, &mut folders, &names);
         shared
             .db
             .write(|conn| save(conn, &file, &found).map_err(DbError::from))?;
@@ -693,6 +715,10 @@ mod tests {
     use image::{ImageFormat, RgbImage};
 
     use super::*;
+
+    fn default_names() -> Vec<String> {
+        FOLDER_NAMES.map(str::to_owned).to_vec()
+    }
 
     /// A PNG of the size, its color telling pictures apart.
     fn png(width: u32, height: u32, shade: u8) -> Vec<u8> {
@@ -777,7 +803,34 @@ mod tests {
         let path = dir.join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
-        find(&path, &dir.join("art"), &mut FolderArt::new())
+        find(
+            &path,
+            &dir.join("art"),
+            &mut FolderArt::new(),
+            &default_names(),
+        )
+    }
+
+    #[test]
+    fn folder_images_are_found_by_the_names_given_in_their_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cover, album) = (png(40, 40, 1), png(40, 40, 2));
+        fs::create_dir_all(dir.path().join("a")).unwrap();
+        fs::write(dir.path().join("a/Cover.jpg"), &cover).unwrap();
+        fs::write(dir.path().join("a/ALBUM.png"), &album).unwrap();
+        fs::write(dir.path().join("a/1.mp3"), mp3(&[])).unwrap();
+        let found = |names: &[&str]| {
+            let names: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();
+            find(
+                &dir.path().join("a/1.mp3"),
+                &dir.path().join("art"),
+                &mut FolderArt::new(),
+                &names,
+            )
+        };
+        assert_eq!(found(&["cover", "album"]).art, Some(hash_of(&cover)));
+        assert_eq!(found(&["album", "cover"]).art, Some(hash_of(&album)));
+        assert_eq!(found(&["front"]).source, Source::None);
     }
 
     #[test]

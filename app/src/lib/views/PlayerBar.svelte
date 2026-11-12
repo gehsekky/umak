@@ -1,10 +1,13 @@
 <script lang="ts">
   // The player bar: what is playing, the transport and seek bar, and the volume.
+  import { shortcutHint, shortcutOf } from "../actions/keys";
   import { actionLabel, runAction } from "../actions/registry";
+  import { keyLabel } from "../actions/shortcuts";
   import Cover from "../lists/Cover.svelte";
   import { formatDuration } from "../lists/format";
   import StarRating from "../lists/StarRating.svelte";
   import { player } from "../player/state.svelte";
+  import { skipMs } from "../player/steps";
   import WaveformSeek from "../player/WaveformSeek.svelte";
   import { gainToSlider, sliderToGain } from "../player/volume";
   import { app } from "../state/app.svelte";
@@ -22,6 +25,17 @@
   const isMuted = $derived(player.settings?.muted ?? false);
   const shownVolume = $derived(
     dragVolume ?? (isMuted ? 0 : gainToSlider(player.settings?.volume ?? 1)),
+  );
+
+  const skipKeys = $derived(
+    [shortcutOf("player.skipBack"), shortcutOf("player.skipForward")].flatMap((key) =>
+      key ? [keyLabel(key)] : [],
+    ),
+  );
+  const skipTitle = $derived(
+    skipKeys.length > 0
+      ? `${skipKeys.join(" and ")} ${skipKeys.length === 1 ? "skips" : "skip"} ${skipMs() / 1000} seconds`
+      : undefined,
   );
 
   function finishSeek(ms: number): void {
@@ -60,25 +74,25 @@
 
   <div class="buttons">
     <button
-      title="{actionLabel('player.previous')} (Ctrl+Left)"
+      title="{actionLabel('player.previous')}{shortcutHint('player.previous')}"
       aria-label={actionLabel("player.previous")}
       disabled={!isActive}
       onclick={() => runAction("player.previous")}>⏮</button
     >
     <button
       class="main"
-      title="{actionLabel('player.toggle')} (Space)"
+      title="{actionLabel('player.toggle')}{shortcutHint('player.toggle')}"
       aria-label={isPlaying ? "Pause" : "Play"}
       onclick={() => runAction("player.toggle")}>{isPlaying ? "⏸" : "▶"}</button
     >
     <button
-      title={actionLabel("player.stop")}
+      title="{actionLabel('player.stop')}{shortcutHint('player.stop')}"
       aria-label={actionLabel("player.stop")}
       disabled={!isActive}
       onclick={() => runAction("player.stop")}>⏹</button
     >
     <button
-      title="{actionLabel('player.next')} (Ctrl+Right)"
+      title="{actionLabel('player.next')}{shortcutHint('player.next')}"
       aria-label={actionLabel("player.next")}
       disabled={!isActive}
       onclick={() => runAction("player.next")}>⏭</button
@@ -93,7 +107,7 @@
       positionMs={isActive ? shownPosition : 0}
       durationMs={duration}
       disabled={!isActive || duration === 0}
-      title="Shift+Left and Shift+Right skip 5 seconds"
+      title={skipTitle}
       oninput={(ms) => (dragPosition = ms)}
       onchange={finishSeek}
     />
@@ -103,7 +117,7 @@
   <div class="extras">
     <button
       class:on={isMuted}
-      title="{actionLabel('player.toggleMute')} (M)"
+      title="{actionLabel('player.toggleMute')}{shortcutHint('player.toggleMute')}"
       aria-label={actionLabel("player.toggleMute")}
       aria-pressed={isMuted}
       onclick={() => runAction("player.toggleMute")}>{isMuted ? "🔇" : "🔊"}</button
@@ -117,7 +131,7 @@
       value={shownVolume}
       disabled={!player.settings}
       aria-label={actionLabel("player.setVolume")}
-      title="{actionLabel('player.setVolume')} {Math.round(shownVolume * 100)}% (Ctrl+Up and Ctrl+Down)"
+      title="{actionLabel('player.setVolume')} {Math.round(shownVolume * 100)}%{shortcutHint('player.volumeUp', 'player.volumeDown')}"
       oninput={(event) => {
         dragVolume = event.currentTarget.valueAsNumber;
         player.setVolumeSoon(sliderToGain(dragVolume));
@@ -126,19 +140,19 @@
     />
     <button
       class:on={app.visualsDocked}
-      title="{actionLabel('visuals.toggleDock')} (V)"
+      title="{actionLabel('visuals.toggleDock')}{shortcutHint('visuals.toggleDock')}"
       aria-label={actionLabel("visuals.toggleDock")}
       aria-pressed={app.visualsDocked}
       onclick={() => runAction("visuals.toggleDock")}>〰</button
     >
     <button
-      title="{actionLabel('visuals.toggleFull')} (F)"
+      title="{actionLabel('visuals.toggleFull')}{shortcutHint('visuals.toggleFull')}"
       aria-label={actionLabel("visuals.toggleFull")}
       onclick={() => runAction("visuals.toggleFull")}>⛶</button
     >
     <button
       class:on={app.queueOpen}
-      title="{actionLabel('queue.togglePanel')} (Ctrl+Q)"
+      title="{actionLabel('queue.togglePanel')}{shortcutHint('queue.togglePanel')}"
       aria-label={actionLabel("queue.togglePanel")}
       aria-pressed={app.queueOpen}
       onclick={() => runAction("queue.togglePanel")}>☰</button
