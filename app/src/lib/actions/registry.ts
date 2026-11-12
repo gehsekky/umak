@@ -85,6 +85,8 @@ export type ActionMap = {
   "visuals.toggleDock": void;
   "visuals.toggleFull": void;
   "visuals.next": { place: "dock" | "full" };
+  "settings.set": { key: string; value: unknown };
+  "settings.reset": { keys: string[] };
 };
 
 export type ActionId = keyof ActionMap;

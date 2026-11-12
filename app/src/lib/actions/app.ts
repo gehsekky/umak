@@ -5,6 +5,7 @@ import { countOf } from "../lists/format";
 import { pickExportFile, pickExportTarget, pickFolder } from "../platform/dialog";
 import { playerClient } from "../player/client";
 import { player } from "../player/state.svelte";
+import { settings } from "../settings/state.svelte";
 import { app } from "../state/app.svelte";
 import { tagDraft } from "../tags/current.svelte";
 import { findVisualizer, nextVisualizer } from "../visuals/plugin";
@@ -55,7 +56,7 @@ export function registerAppActions(): void {
 
   registerAction({
     id: "nav.settings",
-    label: "Audio",
+    label: "Settings",
     run: () => {
       app.view = { kind: "settings" };
     },
@@ -423,6 +424,17 @@ export function registerAppActions(): void {
     run: ({ trackId }) => playerClient.playAlbum(trackId),
   });
   registerAction({ id: "player.seek", label: "Seek", run: ({ ms }) => playerClient.seek(ms) });
+
+  registerAction({
+    id: "settings.set",
+    label: "Change setting",
+    run: ({ key, value }) => settings.set(key, value),
+  });
+  registerAction({
+    id: "settings.reset",
+    label: "Reset to default",
+    run: ({ keys }) => settings.reset(keys),
+  });
 
   registerAction({
     id: "player.setVolume",

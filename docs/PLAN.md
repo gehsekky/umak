@@ -487,7 +487,7 @@ Each phase should plug into the last without a large refactor. Features arrive i
 | Tag editing | The tag model covers multi-value fields and raw tags | Tag writing and undo |
 | File watching | The scanner processes a set of changed paths, so a watcher can feed it | The watcher, after the MVP |
 | Conversion, long tasks | Long operations are cancelable jobs that report progress | FFmpeg runner |
-| Later settings | One typed, versioned settings store | Most of the settings |
+| Later settings | One typed, versioned settings store, built in the settings round after phase 5 | Most of the settings |
 | Later schema and export changes | Numbered migrations and a versioned export format | The changes |
 | Server | The server-ready design rules | axum and OpenSubsonic |
 
@@ -710,6 +710,8 @@ Exit criteria:
 - Export and import carry the settings, and a setting the importing app does not know is kept, not dropped.
 - A bad value from any source, including an edited database or theme file, falls back to the default with a message, never a crash.
 - The existing player settings keep their stored values through the move.
+
+Step 1, November 2026: the core declares each setting once in `settings.rs`, with its section, label, help, kind (on or off, a number in a range with a step and unit, a choice among named values, or a control of its own such as the equalizer) and default. Values are stored as JSON; migration 9 quotes the values the player kept as plain text, and a value from before is still read by its meaning if one arrives in an old export. `settings.list` gives every definition and value, `settings.set` checks a value, bringing a number into range and refusing anything else the setting does not allow, and `settings.reset` puts any set of settings back to their defaults; each announces `settingsChanged` with the new values. A saved value that makes no sense reads as the default and carries a message saying why. The player keeps its own commands for the volume, ReplayGain and equalizer, now saving through the store, and a player setting changed through the store reaches a running engine before it is saved, as before. An import that brings settings has the player take them up at once. Settings that are set elsewhere, such as the volume and mute on the player bar, are declared but not listed, and the saved equalizer presets stay the player's own data beside the settings. The Settings view lists sections in the core's order, searches labels, help and choices, marks each setting changed from its default with a reset beside it, and resets a whole section; problems in settings not listed show at its top, and a message at start says when any saved value was not used. Checked in a release build on a copy of a database with the player's settings saved the old way: the volume, ReplayGain mode, preamp, equalizer bands and a saved preset all came through, a setting nobody declares was kept, a nonsense mute value was reported and reset, changes applied while a track played without interrupting it, and every value survived a restart.
 
 ## Milestones, risks and open questions
 

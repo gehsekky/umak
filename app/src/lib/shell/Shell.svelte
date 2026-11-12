@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import { keyBelongsToElement, runShortcut, shortcutName } from "../actions/registry";
   import { player } from "../player/state.svelte";
+  import { settings } from "../settings/state.svelte";
   import { app } from "../state/app.svelte";
   import { viewsIn } from "./regions";
 
@@ -12,8 +13,17 @@
 
   onMount(() => {
     const stops: (() => void)[] = [];
-    Promise.all([app.start(), player.start()])
-      .then((unlisten) => stops.push(...unlisten))
+    Promise.all([app.start(), player.start(), settings.start()])
+      .then(([stopApp, stopPlayer, loaded]) => {
+        stops.push(stopApp, stopPlayer, loaded.stop);
+        if (loaded.problems > 0) {
+          app.fail(
+            loaded.problems === 1
+              ? "A saved setting made no sense, so its default is used. Settings shows which."
+              : `${loaded.problems} saved settings made no sense, so their defaults are used. Settings shows which.`,
+          );
+        }
+      })
       .catch((failure: { message?: string }) => {
         startError = failure.message ?? String(failure);
       });

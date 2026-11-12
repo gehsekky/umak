@@ -16,6 +16,7 @@ pub mod player;
 pub mod player_engine;
 pub mod playlists;
 pub mod scan;
+pub mod settings;
 pub mod smart;
 pub mod stats;
 pub mod tagcopy;

@@ -21,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0006_waveforms.sql"),
     include_str!("../migrations/0007_art.sql"),
     include_str!("../migrations/0008_album_browse.sql"),
+    include_str!("../migrations/0009_settings_json.sql"),
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -245,6 +246,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!((user, kind.as_str()), (DEFAULT_USER_ID, "player"));
+    }
+
+    #[test]
+    fn settings_saved_as_plain_text_become_json() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &MIGRATIONS[..8]).unwrap();
+        conn.execute_batch(
+            "INSERT INTO settings (key, value) VALUES
+                 ('player.replayGain', 'album'), ('player.volume', '0.5'), ('player.eq', '{}')",
+        )
+        .unwrap();
+        migrate(&mut conn, MIGRATIONS).unwrap();
+        let values: Vec<String> = conn
+            .prepare("SELECT value FROM settings ORDER BY key")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(values, ["{}", "\"album\"", "0.5"]);
     }
 
     #[test]

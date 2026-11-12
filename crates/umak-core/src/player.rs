@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use ts_rs::TS;
 use umak_audio::protocol::{
     EQ_BANDS, EQ_FREQUENCIES, PlaybackState, PlayerCommand, PlayerEvent, ReplayGainMode,
@@ -20,6 +21,7 @@ use crate::api::{ApiError, CoreEvent, ErrorCode, EventSink};
 use crate::db::{Database, DbError};
 use crate::library::{TRACK_COLUMNS, TrackRow};
 use crate::playlists::{self, PlayerEdit, PlaylistPage};
+use crate::settings;
 use crate::user_data::{self, PlayTracker};
 
 /// How much playback can be lost if the app ends without warning.
@@ -30,13 +32,16 @@ const HEALTH_LOG_NAME: &str = "player-health.log";
 const MAX_HEALTH_LOG_BYTES: u64 = 256 * 1024;
 /// A device normally asks for audio every 10 ms or so. This is well past that.
 const STALL_US: u64 = 100_000;
-const VOLUME_KEY: &str = "player.volume";
-const MUTED_KEY: &str = "player.muted";
-const REPLAY_GAIN_KEY: &str = "player.replayGain";
-const PREAMP_KEY: &str = "player.preampDb";
+/// Every setting the player follows starts with this.
+const SETTINGS_PREFIX: &str = "player.";
+pub(crate) const VOLUME_KEY: &str = "player.volume";
+pub(crate) const MUTED_KEY: &str = "player.muted";
+pub(crate) const REPLAY_GAIN_KEY: &str = "player.replayGain";
+pub(crate) const PREAMP_KEY: &str = "player.preampDb";
 /// The preamp's range in decibels.
-const MAX_PREAMP_DB: f32 = 12.0;
-const EQ_KEY: &str = "player.eq";
+pub(crate) const MAX_PREAMP_DB: f32 = 12.0;
+pub(crate) const EQ_KEY: &str = "player.eq";
+/// Saved presets are the player's own data, kept beside the settings but not one of them.
 const EQ_PRESETS_KEY: &str = "player.eqPresets";
 /// The range of an equalizer band in decibels.
 const MAX_BAND_DB: f32 = 12.0;
@@ -162,6 +167,32 @@ fn clean_bands(bands: &[f32]) -> Result<[f32; EQ_BANDS], ApiError> {
     Ok(bands.map(|db| db.clamp(-MAX_BAND_DB, MAX_BAND_DB)))
 }
 
+pub(crate) fn default_eq() -> Value {
+    serde_json::to_value(EqSettings::default()).unwrap_or_default()
+}
+
+/// Checks the equalizer setting, bringing each band into range.
+pub(crate) fn check_eq(value: &Value) -> Result<Value, String> {
+    let eq = serde_json::from_value::<EqSettings>(value.clone())
+        .map_err(|_| "needs to say whether it is on and give a level for each band".to_owned())?;
+    let bands = clean_bands(&eq.bands).map_err(|error| error.message)?;
+    serde_json::to_value(EqSettings {
+        enabled: eq.enabled,
+        bands: bands.to_vec(),
+    })
+    .map_err(|error| error.to_string())
+}
+
+/// Whether the player follows a setting.
+pub(crate) fn is_player_setting(key: &str) -> bool {
+    key.starts_with(SETTINGS_PREFIX) && key != EQ_PRESETS_KEY
+}
+
+/// A number as it was given, without the digits a wider type would add.
+fn json_number(number: f32) -> Value {
+    json!(number.to_string().parse::<f64>().unwrap_or_default())
+}
+
 fn saved_presets(conn: &Connection) -> Result<Vec<EqPreset>, ApiError> {
     Ok(saved_setting(conn, EQ_PRESETS_KEY)?
         .and_then(|value| serde_json::from_str::<Vec<EqPreset>>(&value).ok())
@@ -242,35 +273,31 @@ fn save_setting(conn: &Connection, key: &str, value: &str) -> Result<(), ApiErro
     Ok(())
 }
 
-/// Reads the saved settings. A value that makes no sense falls back to its default.
+/// Reads the settings from the store, which has already checked them.
 fn load_settings(conn: &Connection) -> Result<PlayerSettings, ApiError> {
-    let defaults = PlayerSettings::default();
-    let number = |key: &str| -> Result<Option<f32>, ApiError> {
-        Ok(saved_setting(conn, key)?
-            .and_then(|value| value.parse::<f32>().ok())
-            .filter(|value| value.is_finite()))
+    load_settings_with(conn, &[])
+}
+
+/// Reads the settings, with some taken as already changed.
+fn load_settings_with(
+    conn: &Connection,
+    changed: &[(&str, &Value)],
+) -> Result<PlayerSettings, ApiError> {
+    let value = |key: &str| settings::value_with(conn, key, changed);
+    let number = |key: &str| -> Result<f32, ApiError> {
+        Ok(value(key)?.as_f64().unwrap_or_default() as f32)
     };
-    let replay_gain = match saved_setting(conn, REPLAY_GAIN_KEY)?.as_deref() {
+    let replay_gain = match value(REPLAY_GAIN_KEY)?.as_str() {
         Some("track") => ReplayGainMode::Track,
         Some("album") => ReplayGainMode::Album,
-        _ => defaults.replay_gain,
+        _ => ReplayGainMode::Off,
     };
-    let eq = saved_setting(conn, EQ_KEY)?
-        .and_then(|value| serde_json::from_str::<EqSettings>(&value).ok())
-        .and_then(|eq| {
-            let bands = clean_bands(&eq.bands).ok()?;
-            Some(EqSettings {
-                enabled: eq.enabled,
-                bands: bands.to_vec(),
-            })
-        })
-        .unwrap_or(defaults.eq);
     Ok(PlayerSettings {
-        volume: number(VOLUME_KEY)?.map_or(defaults.volume, |volume| volume.clamp(0.0, 1.0)),
-        muted: saved_setting(conn, MUTED_KEY)?.as_deref() == Some("true"),
+        volume: number(VOLUME_KEY)?,
+        muted: value(MUTED_KEY)?.as_bool().unwrap_or(false),
         replay_gain,
-        preamp_db: number(PREAMP_KEY)?.map_or(defaults.preamp_db, clamp_preamp),
-        eq,
+        preamp_db: number(PREAMP_KEY)?,
+        eq: serde_json::from_value(value(EQ_KEY)?).unwrap_or_default(),
     })
 }
 
@@ -295,6 +322,21 @@ fn eq_command(eq: &EqSettings) -> Result<PlayerCommand, ApiError> {
         enabled: eq.enabled,
         bands_db: clean_bands(&eq.bands)?,
     })
+}
+
+type Backend = Arc<Mutex<Option<Box<dyn PlayerBackend>>>>;
+
+/// Has a running engine take up every setting. A later engine starts with them.
+fn tell_running_engine_all(backend: &Backend, settings: &PlayerSettings) {
+    if let Some(running) = lock(backend).as_mut() {
+        let _ = running.send(&PlayerCommand::SetVolume {
+            volume: audible_volume(settings),
+        });
+        let _ = running.send(&gain_command(settings));
+        if let Ok(command) = eq_command(&settings.eq) {
+            let _ = running.send(&command);
+        }
+    }
 }
 
 /// An engine that takes commands. Its events go to the callback it was created with.
@@ -556,7 +598,7 @@ fn moved_place(
 
 pub struct Player {
     shared: Arc<Shared>,
-    backend: Mutex<Option<Box<dyn PlayerBackend>>>,
+    backend: Backend,
     factory: Mutex<BackendFactory>,
     /// Held across a change to the list and its message to the engine, because an edit
     /// only makes sense applied to the list before it.
@@ -576,7 +618,7 @@ impl Player {
                 seen_underruns: Mutex::new(0),
                 visuals: AtomicBool::new(false),
             }),
-            backend: Mutex::new(None),
+            backend: Arc::default(),
             factory: Mutex::new(factory),
             list: Mutex::new(()),
         }
@@ -828,7 +870,8 @@ impl Player {
         }
     }
 
-    fn settings_changed(&self) -> Result<PlayerSettings, ApiError> {
+    /// Tells views the settings as they now are.
+    pub(crate) fn settings_changed(&self) -> Result<PlayerSettings, ApiError> {
         let settings = self.settings()?;
         self.shared.events.emit(&CoreEvent::PlayerSettingsChanged {
             settings: settings.clone(),
@@ -836,16 +879,52 @@ impl Player {
         Ok(settings)
     }
 
+    /// Has a running engine take up settings about to be saved, given as they will be stored.
+    /// The engine comes first, because the database may be waiting on a scan.
+    pub(crate) fn apply(&self, changed: &[(&str, &Value)]) -> Result<(), ApiError> {
+        let settings = self
+            .shared
+            .db
+            .read(|conn| load_settings_with(conn, changed))?;
+        tell_running_engine_all(&self.backend, &settings);
+        Ok(())
+    }
+
+    /// Something a background job can call when it has changed settings in the database, such
+    /// as an import, so that playback and views follow them.
+    pub fn settings_applier(&self) -> impl Fn() + Send + 'static + use<> {
+        let shared = Arc::clone(&self.shared);
+        let backend = Arc::clone(&self.backend);
+        move || {
+            if let Ok(settings) = shared.db.read(load_settings) {
+                tell_running_engine_all(&backend, &settings);
+                shared
+                    .events
+                    .emit(&CoreEvent::PlayerSettingsChanged { settings });
+            }
+        }
+    }
+
+    /// Saves settings, which the engine already has, and tells views about them.
+    fn save(&self, values: &[(&str, Value)]) -> Result<PlayerSettings, ApiError> {
+        let saved = self.shared.db.write(|conn| {
+            values
+                .iter()
+                .map(|(key, value)| settings::write(conn, key, value))
+                .collect::<Result<Vec<_>, ApiError>>()
+        })?;
+        self.shared
+            .events
+            .emit(&CoreEvent::SettingsChanged { settings: saved });
+        self.settings_changed()
+    }
+
     /// Sets the output gain, from 0 to 1. Choosing a volume ends any mute.
     pub fn set_volume(&self, volume: f32) -> Result<PlayerSettings, ApiError> {
         let volume = volume.clamp(0.0, 1.0);
         // The engine first, because the database may be waiting on a scan.
         self.tell_running_engine(&PlayerCommand::SetVolume { volume });
-        self.shared.db.write(|conn| {
-            save_setting(conn, VOLUME_KEY, &volume.to_string())?;
-            save_setting(conn, MUTED_KEY, "false")
-        })?;
-        self.settings_changed()
+        self.save(&[(VOLUME_KEY, json_number(volume)), (MUTED_KEY, json!(false))])
     }
 
     pub fn set_muted(&self, muted: bool) -> Result<PlayerSettings, ApiError> {
@@ -856,10 +935,7 @@ impl Player {
         self.tell_running_engine(&PlayerCommand::SetVolume {
             volume: audible_volume(&settings),
         });
-        self.shared
-            .db
-            .write(|conn| save_setting(conn, MUTED_KEY, if muted { "true" } else { "false" }))?;
-        self.settings_changed()
+        self.save(&[(MUTED_KEY, json!(muted))])
     }
 
     pub fn set_gain(
@@ -877,11 +953,10 @@ impl Player {
             ReplayGainMode::Track => "track",
             ReplayGainMode::Album => "album",
         };
-        self.shared.db.write(|conn| {
-            save_setting(conn, REPLAY_GAIN_KEY, mode)?;
-            save_setting(conn, PREAMP_KEY, &preamp_db.to_string())
-        })?;
-        self.settings_changed()
+        self.save(&[
+            (REPLAY_GAIN_KEY, json!(mode)),
+            (PREAMP_KEY, json_number(preamp_db)),
+        ])
     }
 
     /// Sets the equalizer. It applies at once and is saved.
@@ -891,12 +966,9 @@ impl Player {
             bands: clean_bands(bands)?.to_vec(),
         };
         self.tell_running_engine(&eq_command(&eq)?);
-        let value = serde_json::to_string(&eq)
+        let value = serde_json::to_value(&eq)
             .map_err(|error| ApiError::new(ErrorCode::Internal, error.to_string()))?;
-        self.shared
-            .db
-            .write(|conn| save_setting(conn, EQ_KEY, &value))?;
-        self.settings_changed()
+        self.save(&[(EQ_KEY, value)])
     }
 
     pub fn eq_presets(&self) -> Result<EqPresets, ApiError> {
@@ -1671,6 +1743,65 @@ mod tests {
         );
         assert!(matches!(commands[2], PlayerCommand::SetEq { .. }));
         assert!(matches!(commands[3], PlayerCommand::Load { .. }));
+    }
+
+    #[test]
+    fn settings_changed_elsewhere_reach_a_running_engine_before_they_are_saved() {
+        let fixture = fixture();
+        fixture.player.play_tracks(&["a".to_owned()], 0).unwrap();
+        let mode = json!("track");
+        let preamp = json!(-2.5);
+        fixture
+            .player
+            .apply(&[(REPLAY_GAIN_KEY, &mode), (PREAMP_KEY, &preamp)])
+            .unwrap();
+        assert!(fixture.all_commands().contains(&PlayerCommand::SetGain {
+            replay_gain: ReplayGainMode::Track,
+            preamp_db: -2.5,
+        }));
+        assert_eq!(
+            fixture.player.settings().unwrap(),
+            PlayerSettings::default(),
+            "saving is left to the store"
+        );
+
+        // As an import does it: saved first, then taken up.
+        fixture
+            .db
+            .write(|conn| settings::write(conn, VOLUME_KEY, &json!(0.5)))
+            .unwrap();
+        (fixture.player.settings_applier())();
+        assert!(fixture.all_commands().ends_with(&[
+            PlayerCommand::SetVolume { volume: 0.5 },
+            PlayerCommand::SetGain {
+                replay_gain: ReplayGainMode::Off,
+                preamp_db: 0.0,
+            },
+            PlayerCommand::SetEq {
+                enabled: false,
+                bands_db: [0.0; EQ_BANDS],
+            },
+        ]));
+    }
+
+    #[test]
+    fn changes_from_the_player_are_announced_as_settings_too() {
+        let fixture = fixture();
+        fixture.player.set_volume(0.5).unwrap();
+        let events = fixture.events.0.lock().unwrap();
+        let Some(CoreEvent::SettingsChanged { settings }) = events
+            .iter()
+            .find(|event| matches!(event, CoreEvent::SettingsChanged { .. }))
+        else {
+            panic!("no settings event in {events:?}");
+        };
+        let keys: Vec<&str> = settings
+            .iter()
+            .map(|setting| setting.key.as_str())
+            .collect();
+        assert_eq!(keys, [VOLUME_KEY, MUTED_KEY]);
+        assert_eq!(settings[0].value, json!(0.5));
+        assert!(settings[1].is_default);
     }
 
     #[test]
