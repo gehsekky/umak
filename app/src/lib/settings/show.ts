@@ -10,7 +10,9 @@ export type Section = { name: string; settings: SettingDefinition[] };
 function searchText(definition: SettingDefinition, more: string): string {
   const kind = definition.kind;
   const options =
-    kind.type === "choice" || kind.type === "order" ? kind.options.map((option) => option.label) : [];
+    kind.type === "choice" || kind.type === "order" || kind.type === "several"
+      ? kind.options.map((option) => option.label)
+      : [];
   return [definition.section, definition.label, definition.help, ...options, more]
     .join(" ")
     .toLowerCase();

@@ -741,7 +741,7 @@ fn write_inner(
     })?;
 
     let total = writes.len() as u64;
-    let mut catalog = Catalog::default();
+    let mut catalog = db.read(|conn| Ok::<_, ApiError>(Catalog::new(conn)))?;
     let mut canceled = false;
     progress(0, total);
     for (index, write) in writes.iter().enumerate() {

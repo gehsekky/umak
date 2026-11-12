@@ -3,6 +3,7 @@
   import { actionLabel, runAction } from "../actions/registry";
   import { call } from "../api/client";
   import type { PlaylistItem } from "../api/generated/PlaylistItem";
+  import { activateTrack } from "../lists/activate";
   import { countOf, formatTotalTime } from "../lists/format";
   import { PagedList, type Source } from "../lists/pagedList.svelte";
   import { planStep } from "../lists/reorder";
@@ -208,7 +209,12 @@
     label="Tracks in {playlist.name}"
     track={(item) => item.track}
     number={(_, index) => String(index + 1)}
-    onactivate={(_, index) => runAction("player.playPlaylist", { id, startIndex: index })}
+    onactivate={(item, index) =>
+      activateTrack(
+        item.track.id,
+        () => (selection.has(list.key(item)) ? selectedTrackIds() : []),
+        () => runAction("player.playPlaylist", { id, startIndex: index }),
+      )}
   >
     {#snippet empty()}
       {#if smart}

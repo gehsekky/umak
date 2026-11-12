@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::db::{Database, DbError};
+use crate::settings;
 use store::{Applied, Catalog, FileRecord};
 use tags::FileInfo;
 use walk::{DiskFile, Walk};
@@ -44,6 +45,8 @@ pub enum ScanError {
     Sqlite(#[from] rusqlite::Error),
     #[error("unknown library folder")]
     UnknownRoot,
+    #[error("{0}")]
+    Settings(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +156,8 @@ struct Plan {
     gone: Vec<i64>,
     returned: Vec<i64>,
     unchanged: u64,
+    /// Whether every file is read again, unchanged or not, to sort by new articles.
+    resort: bool,
 }
 
 fn now_ms() -> i64 {
@@ -228,7 +233,7 @@ fn add_to_plan(
     for file in files {
         seen.insert(file.rel_path.clone());
         match known.get(&file.rel_path) {
-            Some(track) if track.size == file.size && track.mtime == file.mtime => {
+            Some(track) if track.size == file.size && track.mtime == file.mtime && !plan.resort => {
                 if track.missing {
                     plan.returned.push(track.id);
                 }
@@ -260,10 +265,20 @@ pub fn scan_library(
     let started = Instant::now();
     let mut report = ScanReport::default();
     let roots = db.read(|conn| select_roots(conn, only))?;
-    let mut plan = Plan::default();
+    let (rules, articles, sorted_with) = db.read(|conn| {
+        Ok::<_, ScanError>((
+            settings::walk_rules(conn),
+            settings::sort_articles(conn),
+            settings::sorted_with(conn).map_err(ScanError::Settings)?,
+        ))
+    })?;
+    let mut plan = Plan {
+        resort: articles != sorted_with,
+        ..Plan::default()
+    };
     for root in &roots {
         let known = db.read(|conn| Ok::<_, ScanError>(known_tracks(conn, root.id)?))?;
-        let walked = walk::walk(&root.path, "");
+        let walked = walk::walk(&root.path, "", &rules);
         let is_offline = walked.unreadable.iter().any(String::is_empty)
             || (walked.files.is_empty() && !known.is_empty());
         if is_offline {
@@ -288,7 +303,13 @@ pub fn scan_library(
         });
     }
     report.walk_ms = started.elapsed().as_millis() as u64;
+    let resort = plan.resort;
     run_plan(db, plan, options, cancel, progress, &mut report)?;
+    // Only a whole library read through can be called sorted, and then even the tracks of a
+    // folder that was offline keep their old values until they are read.
+    if resort && only.is_none() && !report.canceled {
+        db.write(|conn| settings::save_sorted_with(conn, &articles).map_err(ScanError::Settings))?;
+    }
     report.total_ms = started.elapsed().as_millis() as u64;
     Ok(report)
 }
@@ -311,14 +332,15 @@ pub fn scan_paths(
         .pop()
         .ok_or(ScanError::UnknownRoot)?;
     let known = db.read(|conn| Ok::<_, ScanError>(known_tracks(conn, root.id)?))?;
+    let rules = db.read(|conn| Ok::<_, ScanError>(settings::walk_rules(conn)))?;
 
     let mut files = Vec::new();
     for rel_path in rel_paths {
         match fs::metadata(root.path.join(rel_path)) {
             Ok(metadata) if metadata.is_dir() => {
-                files.extend(walk::walk(&root.path, rel_path).files);
+                files.extend(walk::walk(&root.path, rel_path, &rules).files);
             }
-            Ok(metadata) if walk::is_audio_file(rel_path) => files.push(DiskFile {
+            Ok(metadata) if rules.is_audio_file(rel_path) => files.push(DiskFile {
                 rel_path: rel_path.clone(),
                 size: metadata.len() as i64,
                 mtime: walk::modified_ms(&metadata),
@@ -450,6 +472,7 @@ fn run_plan(
         gone,
         returned,
         unchanged,
+        resort,
     } = plan;
     let threads = options.threads.max(1);
     report.threads = threads as u64;
@@ -477,7 +500,8 @@ fn run_plan(
 
     let next = AtomicUsize::new(0);
     let times = WorkerTimes::default();
-    let mut catalog = Catalog::default();
+    let mut catalog = db.read(|conn| Ok::<_, ScanError>(Catalog::new(conn)))?;
+    catalog.resort = resort;
 
     thread::scope(|scope| -> Result<(), ScanError> {
         let (sender, receiver) = mpsc::sync_channel::<Scanned>(RESULT_QUEUE);

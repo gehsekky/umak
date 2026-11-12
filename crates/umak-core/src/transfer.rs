@@ -902,7 +902,7 @@ fn merge(
         .iter()
         .map(|root| (root.id.as_str(), root.name.as_str()))
         .collect();
-    let mut catalog = Catalog::default();
+    let mut catalog = Catalog::new(&tx);
     let mut track_ids: HashMap<String, i64> = HashMap::with_capacity(export.tracks.len());
     let mut adopted: HashSet<i64> = HashSet::new();
     let empty = FileInfo::default();

@@ -17,7 +17,8 @@ const VARIOUS_SPELLINGS: &[&str] = &[
     "v.a",
     "v/a",
 ];
-const SORT_ARTICLES: &[&str] = &["the ", "a ", "an "];
+/// Leading words left out when sorting names, unless the settings give others.
+pub const SORT_ARTICLES: [&str; 3] = ["the", "a", "an"];
 
 /// The identity of a name: spellings that differ only by case, whitespace or Unicode
 /// composition share a key. Accents stay significant.
@@ -55,15 +56,33 @@ pub fn sort_key_from_tag(tag: &str) -> String {
     fold(tag)
 }
 
+/// Articles as `sort_key` takes them, folded as names are.
+pub fn sort_articles(articles: &[impl AsRef<str>]) -> Vec<String> {
+    articles
+        .iter()
+        .map(|article| fold(article.as_ref()))
+        .filter(|article| !article.is_empty())
+        .collect()
+}
+
 /// A sort value computed from a display name: case and accents are ignored, and
-/// leading punctuation and articles are dropped.
-pub fn sort_key(name: &str) -> String {
+/// leading punctuation and articles are dropped. An article is a word followed by a space,
+/// or one ending in an apostrophe, such as "l'", followed by anything.
+pub fn sort_key(name: &str, articles: &[String]) -> String {
     let folded = fold(name);
     let text = folded.trim_start_matches(|ch: char| !ch.is_alphanumeric());
-    for article in SORT_ARTICLES {
-        if let Some(rest) = text.strip_prefix(article)
-            && !rest.is_empty()
-        {
+    for article in articles {
+        let Some(rest) = text.strip_prefix(article.as_str()) else {
+            continue;
+        };
+        let rest = if article.ends_with(['\'', '\u{2019}']) {
+            rest
+        } else if let Some(rest) = rest.strip_prefix(' ') {
+            rest
+        } else {
+            continue;
+        };
+        if !rest.is_empty() {
             return rest.to_owned();
         }
     }
@@ -104,6 +123,23 @@ pub fn album_folder(rel_path: &str) -> &str {
 mod tests {
     use super::*;
 
+    fn english() -> Vec<String> {
+        sort_articles(&SORT_ARTICLES)
+    }
+
+    #[test]
+    fn the_articles_given_are_left_out_including_elided_ones() {
+        let articles = sort_articles(&["Die", "L'", "the"]);
+        assert_eq!(sort_key("Die Toten Hosen", &articles), "toten hosen");
+        assert_eq!(sort_key("L'Arc-en-Ciel", &articles), "arc-en-ciel");
+        assert_eq!(sort_key("Lambchop", &articles), "lambchop");
+        assert_eq!(
+            sort_key("A Tribe Called Quest", &articles),
+            "a tribe called quest"
+        );
+        assert_eq!(sort_key("The The", &[]), "the the");
+    }
+
     #[test]
     fn identity_ignores_case_and_composition_but_keeps_accents() {
         assert_eq!(identity_key("The Beatles"), identity_key("the  BEATLES "));
@@ -125,15 +161,22 @@ mod tests {
 
     #[test]
     fn sort_keys_drop_accents_articles_and_leading_punctuation() {
-        assert_eq!(sort_key("The Beatles"), "beatles");
-        assert_eq!(sort_key("Björk"), "bjork");
-        assert_eq!(sort_key("'Til Tuesday"), "til tuesday");
-        assert_eq!(sort_key("A Tribe Called Quest"), "tribe called quest");
-        assert_eq!(sort_key("(What's the Story)"), "what's the story)");
+        assert_eq!(sort_key("The Beatles", &english()), "beatles");
+        assert_eq!(sort_key("Theory", &english()), "theory");
+        assert_eq!(sort_key("Björk", &english()), "bjork");
+        assert_eq!(sort_key("'Til Tuesday", &english()), "til tuesday");
+        assert_eq!(
+            sort_key("A Tribe Called Quest", &english()),
+            "tribe called quest"
+        );
+        assert_eq!(
+            sort_key("(What's the Story)", &english()),
+            "what's the story)"
+        );
         // A name that is only an article or punctuation stays usable.
-        assert_eq!(sort_key("The"), "the");
-        assert_eq!(sort_key("..."), "...");
-        assert_eq!(sort_key("!!!"), "!!!");
+        assert_eq!(sort_key("The", &english()), "the");
+        assert_eq!(sort_key("...", &english()), "...");
+        assert_eq!(sort_key("!!!", &english()), "!!!");
     }
 
     #[test]

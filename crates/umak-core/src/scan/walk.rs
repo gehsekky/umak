@@ -5,13 +5,15 @@ use std::fs;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-/// Formats Lofty can read. Playlist files are deliberately not imported.
-const AUDIO_EXTENSIONS: &[&str] = &[
+/// Formats Lofty can read, which the settings choose from. Playlist files are deliberately
+/// not imported.
+pub const AUDIO_EXTENSIONS: [&str; 15] = [
     "mp3", "flac", "m4a", "m4b", "aac", "ogg", "oga", "opus", "spx", "wav", "aif", "aiff", "ape",
     "wv", "mpc",
 ];
-/// Service folders created by Windows and NAS systems.
-const SKIPPED_FOLDERS: &[&str] = &[
+/// Service folders created by Windows and NAS systems, skipped unless the settings say
+/// otherwise.
+pub const SKIPPED_FOLDERS: [&str; 4] = [
     "$RECYCLE.BIN",
     "System Volume Information",
     "@eaDir",
@@ -19,6 +21,42 @@ const SKIPPED_FOLDERS: &[&str] = &[
 ];
 /// macOS stores file metadata in a sibling named `._<file>`, with the same extension.
 const APPLE_DOUBLE_PREFIX: &str = "._";
+
+/// Which files and folders a walk takes. Both compare ignoring case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalkRules {
+    pub extensions: Vec<String>,
+    pub skipped_folders: Vec<String>,
+}
+
+impl Default for WalkRules {
+    fn default() -> Self {
+        Self {
+            extensions: AUDIO_EXTENSIONS.map(str::to_owned).to_vec(),
+            skipped_folders: SKIPPED_FOLDERS.map(str::to_owned).to_vec(),
+        }
+    }
+}
+
+impl WalkRules {
+    pub fn is_audio_file(&self, name: &str) -> bool {
+        if name.starts_with(APPLE_DOUBLE_PREFIX) {
+            return false;
+        }
+        let Some((_, extension)) = name.rsplit_once('.') else {
+            return false;
+        };
+        self.extensions
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(extension))
+    }
+
+    fn skips(&self, folder: &str) -> bool {
+        self.skipped_folders
+            .iter()
+            .any(|skipped| skipped.eq_ignore_ascii_case(folder))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiskFile {
@@ -35,18 +73,6 @@ pub struct Walk {
     pub unreadable: Vec<String>,
     /// Paths skipped because they are not valid Unicode.
     pub invalid_names: Vec<String>,
-}
-
-pub fn is_audio_file(name: &str) -> bool {
-    if name.starts_with(APPLE_DOUBLE_PREFIX) {
-        return false;
-    }
-    let Some((_, extension)) = name.rsplit_once('.') else {
-        return false;
-    };
-    AUDIO_EXTENSIONS
-        .iter()
-        .any(|known| known.eq_ignore_ascii_case(extension))
 }
 
 fn join(parent: &str, name: &str) -> String {
@@ -67,7 +93,7 @@ pub fn modified_ms(metadata: &fs::Metadata) -> i64 {
 
 /// Walks `start`, a path relative to `root`. Symbolic links and junctions are not
 /// followed, so a link cannot index files twice or form a loop.
-pub fn walk(root: &Path, start: &str) -> Walk {
+pub fn walk(root: &Path, start: &str, rules: &WalkRules) -> Walk {
     let mut result = Walk::default();
     let mut pending = vec![start.to_owned()];
     while let Some(folder) = pending.pop() {
@@ -95,10 +121,10 @@ pub fn walk(root: &Path, start: &str) -> Walk {
                 continue;
             };
             if file_type.is_dir() {
-                if !SKIPPED_FOLDERS.contains(&name) {
+                if !rules.skips(name) {
                     subfolders.push(join(&folder, name));
                 }
-            } else if file_type.is_file() && is_audio_file(name) {
+            } else if file_type.is_file() && rules.is_audio_file(name) {
                 let Ok(metadata) = entry.metadata() else {
                     continue;
                 };
@@ -145,7 +171,7 @@ mod tests {
         ] {
             write(dir.path(), rel);
         }
-        let mut paths: Vec<_> = walk(dir.path(), "")
+        let mut paths: Vec<_> = walk(dir.path(), "", &WalkRules::default())
             .files
             .into_iter()
             .map(|file| file.rel_path)
@@ -166,7 +192,7 @@ mod tests {
     fn size_and_modified_time_are_reported() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "a.mp3");
-        let result = walk(dir.path(), "");
+        let result = walk(dir.path(), "", &WalkRules::default());
         assert_eq!(result.files[0].size, 5);
         assert!(result.files[0].mtime > 0);
     }
@@ -174,7 +200,7 @@ mod tests {
     #[test]
     fn a_missing_start_folder_is_reported_as_unreadable() {
         let dir = tempfile::tempdir().unwrap();
-        let result = walk(dir.path(), "gone");
+        let result = walk(dir.path(), "gone", &WalkRules::default());
         assert!(result.files.is_empty());
         assert_eq!(result.unreadable, ["gone"]);
     }
@@ -184,7 +210,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "A/1.mp3");
         write(dir.path(), "B/2.mp3");
-        let result = walk(dir.path(), "B");
+        let result = walk(dir.path(), "B", &WalkRules::default());
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].rel_path, "B/2.mp3");
     }

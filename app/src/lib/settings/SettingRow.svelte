@@ -5,6 +5,7 @@
   import type { SettingDefinition } from "../api/generated/SettingDefinition";
   import { latestOnly } from "../player/volume";
   import OrderList from "./OrderList.svelte";
+  import TextList from "./TextList.svelte";
   import { formatNumber } from "./show";
   import { settings } from "./state.svelte";
 
@@ -44,7 +45,7 @@
         />
         {definition.label}
       </label>
-    {:else if definition.kind.type === "custom" || definition.kind.type === "order"}
+    {:else if ["custom", "order", "several", "list"].includes(definition.kind.type)}
       <span class="label">{definition.label}</span>
     {:else}
       <label class="label" for={id}>{definition.label}</label>
@@ -92,6 +93,34 @@
       {id}
       options={definition.kind.options}
       value={Array.isArray(value) ? value.filter((name) => typeof name === "string") : []}
+      {disabled}
+      onchange={send}
+    />
+  {:else if definition.kind.type === "several"}
+    {@const chosen = Array.isArray(value) ? value : []}
+    <div class="several" {id}>
+      {#each definition.kind.options as option (option.value)}
+        <label class="option">
+          <input
+            type="checkbox"
+            checked={chosen.includes(option.value)}
+            {disabled}
+            onchange={(event) =>
+              send(
+                event.currentTarget.checked
+                  ? [...chosen, option.value]
+                  : chosen.filter((name) => name !== option.value),
+              )}
+          />
+          {option.label}
+        </label>
+      {/each}
+    </div>
+  {:else if definition.kind.type === "list"}
+    <TextList
+      {id}
+      label={definition.label}
+      value={Array.isArray(value) ? value.filter((item) => typeof item === "string") : []}
       {disabled}
       onchange={send}
     />
@@ -166,6 +195,20 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius);
     font: inherit;
+  }
+
+  .several {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(6em, 1fr));
+    gap: var(--space-xs) var(--space-sm);
+    max-width: 32em;
+  }
+
+  .option {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    cursor: pointer;
   }
 
   .slider {

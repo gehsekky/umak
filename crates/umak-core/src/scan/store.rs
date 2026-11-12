@@ -14,6 +14,7 @@ use super::normalize::{
 };
 use super::tags::{FileInfo, TrackTags, positioned};
 use crate::db::{VARIOUS_ARTISTS_PUBLIC_ID, new_public_id};
+use crate::settings;
 
 const ARTIST_SEPARATOR: &str = ", ";
 
@@ -95,6 +96,10 @@ struct ArtistRow {
 /// transaction are unusable, so a failed batch ends the scan.
 #[derive(Default)]
 pub struct Catalog {
+    /// Folded, as `sort_key` takes them.
+    articles: Vec<String>,
+    /// Whether stored artist sort values are worked out again, the articles having changed.
+    pub resort: bool,
     artists: HashMap<String, ArtistRow>,
     genres: HashMap<String, i64>,
     albums: HashMap<String, i64>,
@@ -104,6 +109,18 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// A catalog sorting names by the articles in the settings.
+    pub fn new(conn: &Connection) -> Self {
+        Self {
+            articles: settings::sort_articles(conn),
+            ..Self::default()
+        }
+    }
+
+    fn sort_key(&self, name: &str) -> String {
+        sort_key(name, &self.articles)
+    }
+
     fn artist(
         &mut self,
         conn: &Connection,
@@ -123,10 +140,22 @@ impl Catalog {
                 })
             })
             .optional()?;
+        let sort_name = || sort_tag.map_or_else(|| self.sort_key(name), sort_key_from_tag);
         let row = match found {
+            Some(row) if self.resort => {
+                let sort_name = sort_name();
+                if sort_name != row.sort_name {
+                    conn.prepare_cached("UPDATE artists SET sort_name = ?2 WHERE id = ?1")?
+                        .execute(params![row.id, sort_name])?;
+                }
+                ArtistRow {
+                    id: row.id,
+                    sort_name,
+                }
+            }
             Some(row) => row,
             None => {
-                let sort_name = sort_tag.map_or_else(|| sort_key(name), sort_key_from_tag);
+                let sort_name = sort_name();
                 conn.prepare_cached(
                     "INSERT INTO artists (public_id, name, sort_name, norm_key)
                      VALUES (?1, ?2, ?3, ?4)",
@@ -186,7 +215,7 @@ impl Catalog {
         let sort_title = tags
             .album_sort
             .as_deref()
-            .map_or_else(|| sort_key(&choice.title), sort_key_from_tag);
+            .map_or_else(|| self.sort_key(&choice.title), sort_key_from_tag);
         let compilation = if flagged { "tagged" } else { "none" };
 
         // Each album artist needs its row before the album's display text is built.
@@ -217,7 +246,7 @@ impl Catalog {
         let artist_sort = match (&tags.album_artist_sort, artists.first()) {
             (Some(tag), _) if choice.source == "tag" => sort_key_from_tag(tag),
             (_, Some((_, row))) => row.sort_name.clone(),
-            _ => sort_key(UNKNOWN_ARTIST),
+            _ => sort_key_from_tag(UNKNOWN_ARTIST),
         };
 
         let existing: Option<i64> = conn
@@ -374,7 +403,7 @@ pub fn apply_file(
     let artist_sort = match (&tags.artist_sort, artists.first()) {
         (Some(tag), _) => sort_key_from_tag(tag),
         (None, Some(row)) => row.sort_name.clone(),
-        (None, None) => sort_key(UNKNOWN_ARTIST),
+        (None, None) => sort_key_from_tag(UNKNOWN_ARTIST),
     };
     let title = tags.title.clone().unwrap_or_else(|| {
         let name = file.rel_path.rsplit('/').next().unwrap_or(file.rel_path);
@@ -385,7 +414,7 @@ pub fn apply_file(
     let title_sort = tags
         .title_sort
         .as_deref()
-        .map_or_else(|| sort_key(&title), sort_key_from_tag);
+        .map_or_else(|| catalog.sort_key(&title), sort_key_from_tag);
 
     let values = params![
         file.root_id,
@@ -572,7 +601,7 @@ fn judge_album_artist(conn: &Connection, album: i64, total: i64) -> rusqlite::Re
         None => (
             None,
             UNKNOWN_ARTIST.to_owned(),
-            sort_key(UNKNOWN_ARTIST),
+            sort_key_from_tag(UNKNOWN_ARTIST),
             "none",
         ),
         Some((id, name, sort, count)) if count * 2 >= total => {

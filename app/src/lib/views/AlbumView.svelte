@@ -5,6 +5,7 @@
   import { call } from "../api/client";
   import type { AlbumTracks } from "../api/generated/AlbumTracks";
   import type { TrackRow } from "../api/generated/TrackRow";
+  import { activateTrack } from "../lists/activate";
   import Cover from "../lists/Cover.svelte";
   import { countOf, formatTotalTime } from "../lists/format";
   import { PagedList, type Source } from "../lists/pagedList.svelte";
@@ -123,7 +124,12 @@
     label="Tracks of {album.title}"
     track={(row) => row}
     number={trackNumber}
-    onactivate={(_row, index) => runAction("player.playTracks", { trackIds, startIndex: index })}
+    onactivate={(row, index) =>
+      activateTrack(
+        row.id,
+        () => [...selection.keys] as string[],
+        () => runAction("player.playTracks", { trackIds, startIndex: index }),
+      )}
   >
     {#snippet empty()}
       <p>This album has no tracks.</p>

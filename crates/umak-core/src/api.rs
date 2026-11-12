@@ -252,11 +252,27 @@ impl Core {
         if !for_player.is_empty() {
             self.player.settings_changed()?;
         }
-        if for_player
-            .iter()
-            .any(|(key, _)| *key == player::OUTPUT_DEVICE_KEY)
-        {
+        let changed = |wanted: &[&str]| changes.iter().any(|(key, _)| wanted.contains(key));
+        if changed(&[player::OUTPUT_DEVICE_KEY]) {
             self.player.output_changed();
+        }
+        if changed(&[settings::COVER_NAMES_KEY]) {
+            self.art.cover_names_changed()?;
+            self.events.emit(&CoreEvent::LibraryChanged);
+        }
+        let scan_keys = [
+            settings::FILE_TYPES_KEY,
+            settings::SKIPPED_FOLDERS_KEY,
+            settings::SORT_ARTICLES_KEY,
+        ];
+        if changed(&scan_keys) {
+            // A scan already running keeps the rules it started with; the next one follows.
+            match (StartScan { roots: None }).run(self) {
+                Err(error) if error.code == ErrorCode::Conflict => {}
+                result => {
+                    result?;
+                }
+            }
         }
         Ok(saved)
     }

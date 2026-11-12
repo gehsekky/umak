@@ -13,7 +13,10 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::api::{ApiError, ErrorCode};
+use crate::art;
 use crate::player;
+use crate::scan::normalize;
+use crate::scan::walk::{self, WalkRules};
 
 /// What a setting holds, which also says how to show it.
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
@@ -35,6 +38,12 @@ pub enum SettingKind {
     Order {
         options: Vec<SettingOption>,
     },
+    /// At least one of the options, kept in their order, such as the file types a scan takes.
+    Several {
+        options: Vec<SettingOption>,
+    },
+    /// Short pieces of text of the user's own, in order, such as names of folders.
+    List,
     /// Has a control of its own, such as the equalizer's bands.
     Custom,
 }
@@ -161,6 +170,49 @@ impl Declared {
                 }
                 Ok(json!(order))
             }
+            SettingKind::Several { options } => {
+                let chosen = value.as_array().ok_or_else(|| "needs a list".to_owned())?;
+                for item in chosen {
+                    let known = item
+                        .as_str()
+                        .is_some_and(|name| options.iter().any(|option| option.value == name));
+                    if !known {
+                        return Err(format!("has {item}, which is not one of its options"));
+                    }
+                }
+                // Kept in the order of the options, each once.
+                let kept: Vec<&str> = options
+                    .iter()
+                    .map(|option| option.value.as_str())
+                    .filter(|name| chosen.iter().any(|item| item == name))
+                    .collect();
+                if kept.is_empty() {
+                    return Err("needs at least one".to_owned());
+                }
+                Ok(json!(kept))
+            }
+            SettingKind::List => {
+                let items = value.as_array().ok_or_else(|| "needs a list".to_owned())?;
+                if items.len() > MAX_LIST_ITEMS {
+                    return Err(format!("has more than {MAX_LIST_ITEMS} entries"));
+                }
+                let mut kept: Vec<String> = Vec::new();
+                for item in items {
+                    let text = item
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty() && text.len() <= MAX_LIST_ITEM)
+                        .ok_or_else(|| format!("has {item}, which is not a short piece of text"))?;
+                    if kept
+                        .iter()
+                        .any(|known| known.to_lowercase() == text.to_lowercase())
+                    {
+                        return Err(format!("has {text} twice"));
+                    }
+                    kept.push(text.to_owned());
+                }
+                Ok(json!(kept))
+            }
             SettingKind::Custom => Ok(value.clone()),
         }
     }
@@ -195,6 +247,19 @@ const APPEARANCE: &str = "Appearance";
 const AUDIO: &str = "Audio";
 const PLAYBACK: &str = "Playback";
 const KEYBOARD: &str = "Keyboard shortcuts";
+const LIBRARY: &str = "Library";
+const BEHAVIOR: &str = "Behavior";
+
+pub const FILE_TYPES_KEY: &str = "library.fileTypes";
+pub const SKIPPED_FOLDERS_KEY: &str = "library.skippedFolders";
+pub const COVER_NAMES_KEY: &str = "library.coverNames";
+pub const SORT_ARTICLES_KEY: &str = "library.sortArticles";
+/// Not a setting: the articles the stored sort values were worked out with, so a scan can
+/// tell when they need working out again.
+const SORTED_WITH_KEY: &str = "scan.sortedWithArticles";
+/// The most a list setting holds, and the longest entry.
+const MAX_LIST_ITEMS: usize = 100;
+const MAX_LIST_ITEM: usize = 100;
 
 pub const THEME_KEY: &str = "appearance.theme";
 
@@ -231,6 +296,48 @@ fn check_columns(value: &Value) -> Result<Value, String> {
     } else {
         Err("needs the title".to_owned())
     }
+}
+
+/// Names of files and folders, which cannot hold a path.
+fn check_names(value: &Value) -> Result<Value, String> {
+    let names = value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str);
+    for name in names {
+        if name.contains(['/', '\\']) || name == "." || name == ".." {
+            return Err(format!("has {name}, which is a path rather than a name"));
+        }
+    }
+    Ok(value.clone())
+}
+
+/// Articles are compared as lowercase words, so they are kept that way.
+fn check_articles(value: &Value) -> Result<Value, String> {
+    let mut articles = Vec::new();
+    for article in value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if article.contains(char::is_whitespace) {
+            return Err(format!("has {article}, which is more than one word"));
+        }
+        articles.push(article.to_lowercase());
+    }
+    Ok(json!(articles))
+}
+
+fn file_types() -> Vec<SettingOption> {
+    walk::AUDIO_EXTENSIONS
+        .iter()
+        .map(|extension| SettingOption {
+            value: (*extension).to_owned(),
+            label: format!(".{extension}"),
+        })
+        .collect()
 }
 
 /// An output device is named by the engine, which falls back to the default for one not there.
@@ -432,6 +539,76 @@ static DECLARED: LazyLock<Vec<Declared>> = LazyLock::new(|| {
             json!(5.0),
         ),
         Declared::new(
+            FILE_TYPES_KEY,
+            LIBRARY,
+            "File types",
+            "The kinds of file a scan adds to the library. Taking one away leaves its tracks \
+             missing after the scan, keeping their ratings and plays should it come back. \
+             Changing this starts a scan.",
+            SettingKind::Several {
+                options: file_types(),
+            },
+            json!(walk::AUDIO_EXTENSIONS),
+        ),
+        Declared::new(
+            SKIPPED_FOLDERS_KEY,
+            LIBRARY,
+            "Folders to skip",
+            "Folders with these names, anywhere in a library folder, are not scanned, ignoring \
+             case. Changing this starts a scan.",
+            SettingKind::List,
+            json!(walk::SKIPPED_FOLDERS),
+        )
+        .checked_by(check_names),
+        Declared::new(
+            COVER_NAMES_KEY,
+            LIBRARY,
+            "Cover image names",
+            "For a track with no picture in its tags, a JPEG or PNG image in its folder named \
+             one of these, ignoring case, in this order of preference. Changing this looks \
+             through folders again.",
+            SettingKind::List,
+            json!(art::FOLDER_NAMES),
+        )
+        .checked_by(check_names),
+        Declared::new(
+            SORT_ARTICLES_KEY,
+            LIBRARY,
+            "Words left out when sorting",
+            "Names starting with one of these words sort by what follows, so The Beatles sort \
+             under B. A word ending in an apostrophe, such as l', needs no space after it. Sort \
+             tags in your files always win. Changing this reads every file again in a scan.",
+            SettingKind::List,
+            json!(normalize::SORT_ARTICLES),
+        )
+        .checked_by(check_articles),
+        Declared::new(
+            "behavior.trackActivate",
+            BEHAVIOR,
+            "Double-click or Enter on a track",
+            "What happens to a track, or the tracks chosen with it, in the library, an album \
+             or a playlist. The queue always plays the entry.",
+            choice(&[
+                ("here", "Play from here"),
+                ("album", "Play its album"),
+                ("next", "Play next"),
+                ("queue", "Add to the queue"),
+            ]),
+            json!("here"),
+        ),
+        Declared::new(
+            "behavior.startView",
+            BEHAVIOR,
+            "Open on",
+            "What the app shows when it starts.",
+            choice(&[
+                ("library", "Library"),
+                ("albums", "Albums"),
+                ("last", "Where you left off"),
+            ]),
+            json!("library"),
+        ),
+        Declared::new(
             "keys.shortcuts",
             KEYBOARD,
             "Shortcuts",
@@ -443,6 +620,65 @@ static DECLARED: LazyLock<Vec<Declared>> = LazyLock::new(|| {
         .checked_by(check_shortcuts),
     ]
 });
+
+fn strings(value: Value) -> Vec<String> {
+    match value {
+        Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A list setting's value, or its default if it cannot be read.
+fn list(conn: &Connection, key: &str) -> Vec<String> {
+    let value = value(conn, key)
+        .or_else(|_| declared(key).map(|declared| declared.definition.default.clone()))
+        .unwrap_or_default();
+    strings(value)
+}
+
+/// Which files and folders a scan takes.
+pub fn walk_rules(conn: &Connection) -> WalkRules {
+    WalkRules {
+        extensions: list(conn, FILE_TYPES_KEY),
+        skipped_folders: list(conn, SKIPPED_FOLDERS_KEY),
+    }
+}
+
+/// The articles sort values leave out, as `sort_key` takes them.
+pub fn sort_articles(conn: &Connection) -> Vec<String> {
+    normalize::sort_articles(&list(conn, SORT_ARTICLES_KEY))
+}
+
+/// The names of folder images taken as art, in order of preference, lowercase.
+pub fn cover_names(conn: &Connection) -> Vec<String> {
+    list(conn, COVER_NAMES_KEY)
+        .iter()
+        .map(|name| name.to_lowercase())
+        .collect()
+}
+
+/// The articles the stored sort values were worked out with. A library from before they
+/// were a setting used the defaults.
+pub fn sorted_with(conn: &Connection) -> Result<Vec<String>, String> {
+    let saved = stored(conn, SORTED_WITH_KEY).map_err(|error| error.message)?;
+    Ok(match saved {
+        Some(raw) => normalize::sort_articles(&strings(parse_stored(&raw))),
+        None => normalize::sort_articles(&normalize::SORT_ARTICLES),
+    })
+}
+
+pub fn save_sorted_with(conn: &Connection, articles: &[String]) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![SORTED_WITH_KEY, json!(articles).to_string()],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
 
 fn declared(key: &str) -> Result<&'static Declared, ApiError> {
     DECLARED
@@ -642,6 +878,47 @@ mod tests {
                 .message,
             "Track list columns needs the title"
         );
+    }
+
+    #[test]
+    fn several_and_list_settings_keep_what_makes_sense() {
+        let (_dir, db) = open();
+        let set = |key: &str, value: Value| db.write(|conn| write(conn, key, &value));
+        let saved = set(FILE_TYPES_KEY, json!(["flac", "mp3", "flac"])).unwrap();
+        assert_eq!(
+            saved.value,
+            json!(["mp3", "flac"]),
+            "in the options' order, once"
+        );
+        for bad in [json!([]), json!(["exe"]), json!("mp3")] {
+            assert!(set(FILE_TYPES_KEY, bad).is_err());
+        }
+
+        let saved = set(SORT_ARTICLES_KEY, json!([" The ", "Die", "l'"])).unwrap();
+        assert_eq!(saved.value, json!(["the", "die", "l'"]));
+        assert_eq!(
+            set(SORT_ARTICLES_KEY, json!(["the", "THE"]))
+                .unwrap_err()
+                .message,
+            "Words left out when sorting has THE twice"
+        );
+        assert!(set(SORT_ARTICLES_KEY, json!(["de la"])).is_err());
+        assert!(set(SORT_ARTICLES_KEY, json!([""])).is_err());
+        assert_eq!(
+            set(SKIPPED_FOLDERS_KEY, json!(["a/b"]))
+                .unwrap_err()
+                .message,
+            "Folders to skip has a/b, which is a path rather than a name"
+        );
+        let saved = set(SKIPPED_FOLDERS_KEY, json!([])).unwrap();
+        assert_eq!(saved.value, json!([]));
+        db.read(|conn| {
+            assert!(walk_rules(conn).skipped_folders.is_empty());
+            assert_eq!(cover_names(conn), ["cover", "folder", "front"]);
+            assert_eq!(sort_articles(conn), ["the", "die", "l'"]);
+            Ok::<_, ApiError>(())
+        })
+        .unwrap();
     }
 
     #[test]

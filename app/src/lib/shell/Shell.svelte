@@ -7,17 +7,43 @@
   import { settings } from "../settings/state.svelte";
   import { appearance } from "../theme/appearance.svelte";
   import { app } from "../state/app.svelte";
+  import { LAST_VIEW_KEY, restorable, startingView } from "../state/startView";
   import { viewsIn } from "./regions";
 
   const MainView = $derived(viewsIn("main").find((view) => view.id === app.view.kind)?.component);
 
   let startError = $state<string | null>(null);
 
+  /** The view the app was left on, read before this run keeps its own. */
+  const keptView: unknown = (() => {
+    try {
+      const saved = localStorage.getItem(LAST_VIEW_KEY);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  $effect(() => {
+    const view = restorable(app.view);
+    if (!view) return;
+    try {
+      localStorage.setItem(LAST_VIEW_KEY, JSON.stringify(view));
+    } catch {
+      // Storage can be unavailable; the app then opens as the setting says, or on the library.
+    }
+  });
+
   onMount(() => {
     const stops: (() => void)[] = [appearance.start()];
     Promise.all([app.start(), player.start(), settings.start()])
       .then(([stopApp, stopPlayer, loaded]) => {
         stops.push(stopApp, stopPlayer, loaded.stop);
+        // Unless a view was already chosen while starting.
+        if (app.view.kind === "library") {
+          const playlistIds = app.playlists.map((playlist) => playlist.id);
+          app.view = startingView(settings.value("behavior.startView"), keptView, playlistIds);
+        }
         if (loaded.problems > 0) {
           app.fail(
             loaded.problems === 1
