@@ -1160,3 +1160,122 @@ fn scanned_copies_are_found_as_duplicates() {
     lib.scan();
     assert!(find(DuplicateMatch::Audio).is_empty());
 }
+
+#[test]
+fn artists_list_by_album_artist_tag_and_otherwise_by_track_artist() {
+    use crate::artists::{artist_albums, artist_page, artist_track_ids};
+    use crate::library::{TrackSort, track_page};
+
+    let lib = library();
+    let with = |title, artist, album_artist, album| {
+        vec![
+            ("TIT2", title),
+            ("TPE1", artist),
+            ("TPE2", album_artist),
+            ("TALB", album),
+        ]
+    };
+    // Tagged: the guest on track 2 is not listed for it.
+    lib.mp3("band/1.mp3", 1, &with("One", "Band", "Band", "Tagged"));
+    lib.mp3("band/2.mp3", 2, &with("Two", "Guest", "Band", "Tagged"));
+    // No album artist: the scanner judges a compilation, but each artist lists.
+    lib.mp3("mix/1.mp3", 3, &tagged("A", "Solo One", "Mixed"));
+    lib.mp3("mix/2.mp3", 4, &tagged("B", "Solo Two", "Mixed"));
+    lib.mp3("mix/3.mp3", 5, &tagged("C", "Solo Three", "Mixed"));
+    // Flagged as a compilation with no album artist: still each artist.
+    let flagged = |title, artist| {
+        vec![
+            ("TIT2", title),
+            ("TPE1", artist),
+            ("TALB", "Hits"),
+            ("TCMP", "1"),
+        ]
+    };
+    lib.mp3("hits/1.mp3", 6, &flagged("D", "Solo One"));
+    lib.mp3("hits/2.mp3", 7, &flagged("E", "Band"));
+    // Tagged as a compilation: under Various Artists only.
+    lib.mp3(
+        "va/1.mp3",
+        8,
+        &with("F", "Solo Two", "Various Artists", "Comp"),
+    );
+    lib.mp3(
+        "va/2.mp3",
+        9,
+        &with("G", "Other", "Various Artists", "Comp"),
+    );
+    lib.scan();
+
+    let page = lib.query(|conn| artist_page(conn, None, 0, 100));
+    let listed: Vec<(&str, i64, i64)> = page
+        .artists
+        .iter()
+        .map(|artist| (artist.name.as_str(), artist.album_count, artist.track_count))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Band", 2, 3),
+            ("Solo One", 2, 2),
+            ("Solo Three", 1, 1),
+            ("Solo Two", 1, 1),
+            (normalize::VARIOUS_ARTISTS, 1, 2),
+        ]
+    );
+    assert_eq!(page.total, 5);
+    let second = lib.query(|conn| artist_page(conn, None, 1, 1));
+    assert_eq!(
+        (second.artists[0].name.as_str(), second.total),
+        ("Solo One", 5)
+    );
+
+    let names = |text| {
+        let page = lib.query(|conn| artist_page(conn, Some(text), 0, 100));
+        let names: Vec<String> = page.artists.into_iter().map(|artist| artist.name).collect();
+        (names, page.total)
+    };
+    assert_eq!(names("SOLO t").1, 2);
+    assert_eq!(names("solo two"), (vec!["Solo Two".to_owned()], 1));
+    assert_eq!(names("100%").1, 0);
+
+    let solo_one = page.artists[1].id.clone();
+    let albums = lib
+        .query(|conn| artist_albums(conn, &solo_one))
+        .expect("an artist");
+    let titles: Vec<&str> = albums
+        .albums
+        .iter()
+        .map(|album| album.title.as_str())
+        .collect();
+    assert_eq!(titles, ["Hits", "Mixed"]);
+    assert!(lib.query(|conn| artist_albums(conn, "nobody")).is_none());
+
+    let tracks = lib.query(|conn| {
+        let only = artist_track_ids(conn, &solo_one)?;
+        track_page(conn, None, Some(&only), TrackSort::Title, false, 0, 10)
+    });
+    let titles: Vec<&str> = tracks
+        .tracks
+        .iter()
+        .map(|track| track.title.as_str())
+        .collect();
+    assert_eq!((titles, tracks.total), (vec!["A", "D"], 2));
+    let tracks = lib.query(|conn| {
+        let only = artist_track_ids(conn, &page.artists[0].id)?;
+        track_page(
+            conn,
+            Some("tw"),
+            Some(&only),
+            TrackSort::Title,
+            false,
+            0,
+            10,
+        )
+    });
+    let titles: Vec<&str> = tracks
+        .tracks
+        .iter()
+        .map(|track| track.title.as_str())
+        .collect();
+    assert_eq!((titles, tracks.total), (vec!["Two"], 1));
+}

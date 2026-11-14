@@ -11,6 +11,7 @@
   import TrackActions from "../lists/TrackActions.svelte";
   import TrackTable, { type SortState } from "../lists/TrackTable.svelte";
   import { app } from "../state/app.svelte";
+  import LibraryTabs from "./LibraryTabs.svelte";
 
   let query = $state("");
   const INITIAL_SORT: SortState = { sort: "album", descending: false };
@@ -22,6 +23,7 @@
     return async (offset, limit) => {
       const page = await call("library.tracks.page", {
         query: text.trim() || null,
+        artist: null,
         sort: order.sort,
         descending: order.descending,
         offset,
@@ -95,12 +97,13 @@
 </script>
 
 <div class="toolbar">
+  <LibraryTabs />
   <input
     bind:this={searchBox}
     bind:value={query}
     class="search"
     type="search"
-    placeholder="Search title, artist, album, genre (Ctrl+F)"
+    placeholder="Search songs by title, artist, album or genre (Ctrl+F)"
     aria-label={actionLabel("library.focusSearch")}
     oninput={showContents}
     onkeydown={(event) => {
@@ -114,7 +117,7 @@
     }}
   />
   <button class:on={sort.sort === "added"} onclick={toggleRecent}>Recently added</button>
-  <span class="count">{list.ready ? countOf(list.total, "track") : ""}</span>
+  <span class="count">{list.ready ? countOf(list.total, "song") : ""}</span>
 </div>
 
 <TrackActions
@@ -126,7 +129,7 @@
   bind:this={table}
   {list}
   {selection}
-  label="Library tracks"
+  label="Songs"
   track={(row) => row}
   number={(row) => (row.trackNo > 0 ? String(row.trackNo) : "")}
   {sort}
@@ -135,7 +138,7 @@
 >
   {#snippet empty()}
     {#if query.trim()}
-      <p>No tracks match "{query.trim()}"</p>
+      <p>No songs match "{query.trim()}"</p>
     {:else if app.roots.length === 0}
       <p>Add a folder to start your library.</p>
       <button class="primary" onclick={() => runAction("library.addFolder")}>

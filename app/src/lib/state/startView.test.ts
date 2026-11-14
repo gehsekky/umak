@@ -5,6 +5,7 @@ describe("the view the app opens on", () => {
   it("is the one the setting names", () => {
     expect(startingView("library", { kind: "albums" }, [])).toEqual({ kind: "library" });
     expect(startingView("albums", null, [])).toEqual({ kind: "albums" });
+    expect(startingView("artists", null, [])).toEqual({ kind: "artists" });
     expect(startingView(undefined, null, [])).toEqual({ kind: "library" });
   });
 
@@ -20,6 +21,8 @@ describe("the view the app opens on", () => {
     expect(startingView("last", { kind: "album", id: "a" }, [])).toEqual({ kind: "album", id: "a" });
     expect(startingView("last", { kind: "tagEditor" }, [])).toEqual({ kind: "library" });
     expect(startingView("last", { kind: "album" }, [])).toEqual({ kind: "library" });
+    expect(startingView("last", { kind: "artist", id: "x" }, [])).toEqual({ kind: "artist", id: "x" });
+    expect(startingView("last", { kind: "artist" }, [])).toEqual({ kind: "library" });
     expect(startingView("last", "albums", [])).toEqual({ kind: "library" });
   });
 

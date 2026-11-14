@@ -9,12 +9,16 @@ import type { LibraryRoot } from "../api/generated/LibraryRoot";
 import type { Playlist } from "../api/generated/Playlist";
 import { describeReport, needsAttention } from "../convert/options";
 import { describeEdit } from "../tags/plan";
+import { browseOf, type LibraryBrowse } from "./browse";
 import { loadChoices, saveChoices, type VisualChoices, type VisualPlace } from "../visuals/choices";
 
 export type View =
   | { kind: "library" }
+  | { kind: "artists" }
+  | { kind: "artist"; id: string }
   | { kind: "albums" }
-  | { kind: "album"; id: string }
+  /** `from` is the artist whose page the album was opened from. */
+  | { kind: "album"; id: string; from?: { id: string; name: string } }
   | { kind: "folders" }
   | { kind: "import" }
   | { kind: "settings" }
@@ -55,7 +59,19 @@ function initialVisualsDocked(): boolean {
 }
 
 class AppState {
-  view = $state<View>({ kind: "library" });
+  #view = $state<View>({ kind: "library" });
+  /** How the library was last shown, which going back to it shows again. */
+  browse = $state<LibraryBrowse>("library");
+
+  get view(): View {
+    return this.#view;
+  }
+
+  set view(view: View) {
+    this.#view = view;
+    this.browse = browseOf(view) ?? this.browse;
+  }
+
   queueOpen = $state(initialQueueOpen());
   /** Whether a visualizer shows docked below the main view. */
   visualsDocked = $state(initialVisualsDocked());

@@ -602,7 +602,8 @@ static DECLARED: LazyLock<Vec<Declared>> = LazyLock::new(|| {
             "Open on",
             "What the app shows when it starts.",
             choice(&[
-                ("library", "Library"),
+                ("library", "Songs"),
+                ("artists", "Artists"),
                 ("albums", "Albums"),
                 ("last", "Where you left off"),
             ]),

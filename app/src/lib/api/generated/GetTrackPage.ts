@@ -2,6 +2,11 @@
 import type { TrackSort } from "./TrackSort";
 
 /**
- * A page of the library, in the given order, optionally limited to search matches.
+ * A page of the library, in the given order, optionally limited to search matches and to
+ * an artist's tracks.
  */
-export type GetTrackPage = { query: string | null, sort: TrackSort, descending: boolean, offset: number, limit: number, };
+export type GetTrackPage = { query: string | null, 
+/**
+ * An artist's ID, as `library.artists.page` gives it.
+ */
+artist: string | null, sort: TrackSort, descending: boolean, offset: number, limit: number, };

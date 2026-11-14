@@ -5,6 +5,7 @@
 pub mod albums;
 pub mod api;
 pub mod art;
+pub mod artists;
 pub mod convert;
 pub mod convert_job;
 pub mod db;

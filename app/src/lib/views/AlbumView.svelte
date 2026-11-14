@@ -18,6 +18,13 @@
   let error = $state<string | null>(null);
 
   const id = $derived(app.view.kind === "album" ? app.view.id : null);
+  /** The artist whose page the album was opened from, which going back returns to. */
+  const from = $derived(app.view.kind === "album" ? (app.view.from ?? null) : null);
+
+  function back(): void {
+    if (from) void runAction("nav.artist", { id: from.id });
+    else void runAction("nav.albums");
+  }
   const trackIds = $derived(detail?.tracks.map((track) => track.id) ?? []);
   const discs = $derived(new Set(detail?.tracks.map((track) => track.discNo)).size);
   const totalMs = $derived(
@@ -81,7 +88,7 @@
 {#if error}
   <div class="message">
     <p class="error">{error}</p>
-    <button onclick={() => runAction("nav.albums")}>{actionLabel("nav.albums")}</button>
+    <button onclick={back}>{from ? from.name : actionLabel("nav.albums")}</button>
   </div>
 {:else if detail}
   {@const album = detail.album}
@@ -90,7 +97,7 @@
       <Cover art={album.art} size="large" alt="Cover of {album.title}" />
     </div>
     <div class="info">
-      <button class="back" onclick={() => runAction("nav.albums")}>← {actionLabel("nav.albums")}</button>
+      <button class="back" onclick={back}>← {from ? from.name : actionLabel("nav.albums")}</button>
       <h1 title={album.title}>{album.title}</h1>
       <p class="artist">{album.artist}</p>
       <p class="meta">

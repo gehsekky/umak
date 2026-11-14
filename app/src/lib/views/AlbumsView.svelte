@@ -25,6 +25,7 @@
   import { PagedList, type Source } from "../lists/pagedList.svelte";
   import VirtualGrid from "../lists/VirtualGrid.svelte";
   import { app } from "../state/app.svelte";
+  import LibraryTabs from "./LibraryTabs.svelte";
 
   /** How often covers are looked for again while the art cache fills. */
   const ART_RELOAD_MS = 1000;
@@ -166,6 +167,7 @@
 </script>
 
 <div class="toolbar">
+  <LibraryTabs />
   <input
     bind:this={searchBox}
     bind:value={kept.query}

@@ -19,6 +19,7 @@ use umak_convert::Ffmpeg;
 
 use crate::albums::{self, AlbumPage, AlbumSort, AlbumTracks};
 use crate::art::{self, ArtCache, ArtSize, FilePicture, TrackArt};
+use crate::artists::{self, ArtistAlbums, ArtistPage};
 use crate::convert::{self, ConvertPlan, ConvertPreset, ConvertSettings};
 use crate::convert_job::{self, ConversionInfo, ConvertFilePage, ConvertRequest};
 use crate::db::{Database, DbError, new_public_id};
@@ -381,6 +382,8 @@ commands![
     GetAlbumPage,
     GetAlbum,
     FindAlbumArt,
+    GetArtistPage,
+    GetArtist,
     ListPlaylists,
     CreatePlaylist,
     RenamePlaylist,
@@ -599,11 +602,14 @@ fn select_roots(conn: &Connection) -> Result<Vec<LibraryRoot>, rusqlite::Error> 
     .collect()
 }
 
-/// A page of the library, in the given order, optionally limited to search matches.
+/// A page of the library, in the given order, optionally limited to search matches and to
+/// an artist's tracks.
 #[derive(Debug, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct GetTrackPage {
     pub query: Option<String>,
+    /// An artist's ID, as `library.artists.page` gives it.
+    pub artist: Option<String>,
     pub sort: TrackSort,
     pub descending: bool,
     pub offset: u32,
@@ -616,9 +622,14 @@ impl Command for GetTrackPage {
 
     fn run(self, core: &Core) -> Result<TrackPage, ApiError> {
         core.db.read(|conn| {
+            let only = match &self.artist {
+                Some(artist) => Some(artists::artist_track_ids(conn, artist)?),
+                None => None,
+            };
             Ok(library::track_page(
                 conn,
                 self.query.as_deref(),
+                only.as_ref(),
                 self.sort,
                 self.descending,
                 self.offset,
@@ -671,6 +682,51 @@ impl Command for GetAlbum {
         core.db
             .read(|conn| Ok::<_, ApiError>(albums::album_tracks(conn, &self.id)?))?
             .ok_or_else(|| ApiError::new(ErrorCode::NotFound, format!("no album {}", self.id)))
+    }
+}
+
+/// A page of the artists, by sort name, optionally limited to names holding every word of the
+/// query. An album tagged with an album artist lists under that artist; one without lists
+/// under each artist on its tracks.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetArtistPage {
+    pub query: Option<String>,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+impl Command for GetArtistPage {
+    const NAME: &'static str = "library.artists.page";
+    type Output = ArtistPage;
+
+    fn run(self, core: &Core) -> Result<ArtistPage, ApiError> {
+        core.db.read(|conn| {
+            Ok(artists::artist_page(
+                conn,
+                self.query.as_deref(),
+                self.offset,
+                self.limit,
+            )?)
+        })
+    }
+}
+
+/// An artist with the albums holding their tracks. `library.tracks.page` lists the tracks.
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GetArtist {
+    pub id: String,
+}
+
+impl Command for GetArtist {
+    const NAME: &'static str = "library.artists.get";
+    type Output = ArtistAlbums;
+
+    fn run(self, core: &Core) -> Result<ArtistAlbums, ApiError> {
+        core.db
+            .read(|conn| Ok::<_, ApiError>(artists::artist_albums(conn, &self.id)?))?
+            .ok_or_else(|| ApiError::new(ErrorCode::NotFound, format!("no artist {}", self.id)))
     }
 }
 

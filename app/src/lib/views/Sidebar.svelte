@@ -2,6 +2,7 @@
   import { shortcutHint } from "../actions/keys";
   import { actionLabel, runAction } from "../actions/registry";
   import { app } from "../state/app.svelte";
+  import { browseOf } from "../state/browse";
 
   let newName = $state("");
   let nameInput = $state<HTMLInputElement>();
@@ -29,18 +30,11 @@
 <div class="section">
   <button
     class="item"
-    class:active={app.view.kind === "library"}
-    onclick={() => runAction("nav.library")}
+    class:active={browseOf(app.view) !== null}
+    onclick={() => runAction("nav.browse")}
   >
-    <span>{actionLabel("nav.library")}</span>
+    <span>{actionLabel("nav.browse")}</span>
     <span class="count">{app.trackCount.toLocaleString()}</span>
-  </button>
-  <button
-    class="item"
-    class:active={app.view.kind === "albums" || app.view.kind === "album"}
-    onclick={() => runAction("nav.albums")}
-  >
-    <span>{actionLabel("nav.albums")}</span>
   </button>
   <button
     class="item"

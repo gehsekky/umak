@@ -6,6 +6,9 @@
 //! joins. Search walks the same index and stops once the page is full, instead of
 //! sorting every match: a short term can match most of the library.
 
+use std::rc::Rc;
+
+use rusqlite::types::Value;
 use rusqlite::{Connection, Row, ToSql, params};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -127,11 +130,13 @@ pub fn search_query(text: &str) -> Option<String> {
     (!words.is_empty()).then(|| words.join(" "))
 }
 
-/// Returns a page of tracks in the given order, limited to matches of `text` if any.
-/// Missing tracks are included, so the UI can show them as missing.
+/// Returns a page of tracks in the given order, limited to matches of `text` if any, and to
+/// the tracks in `only` if given. Missing tracks are included, so the UI can show them as
+/// missing.
 pub fn track_page(
     conn: &Connection,
     text: Option<&str>,
+    only: Option<&Rc<Vec<Value>>>,
     sort: TrackSort,
     descending: bool,
     offset: u32,
@@ -145,30 +150,47 @@ pub fn track_page(
         .collect::<Vec<_>>()
         .join(", ");
     let search = text.and_then(search_query);
-    let filter = if search.is_some() {
-        "WHERE t.id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?3)"
+    let limit = limit.min(MAX_PAGE);
+    let mut bound: Vec<&dyn ToSql> = vec![&limit, &offset];
+    let mut conditions = Vec::new();
+    if let Some(search) = &search {
+        bound.push(search);
+        conditions.push(format!(
+            "t.id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?{})",
+            bound.len()
+        ));
+    }
+    if let Some(only) = only {
+        bound.push(only);
+        conditions.push(format!("t.id IN rarray(?{})", bound.len()));
+    }
+    let filter = if conditions.is_empty() {
+        String::new()
     } else {
-        ""
+        format!("WHERE {}", conditions.join(" AND "))
     };
     let sql = format!(
         "SELECT {TRACK_COLUMNS} FROM tracks AS t INDEXED BY {index} {filter}
          ORDER BY {order} LIMIT ?1 OFFSET ?2"
     );
-    let limit = limit.min(MAX_PAGE);
-    let mut bound: Vec<&dyn ToSql> = vec![&limit, &offset];
-    if let Some(search) = &search {
-        bound.push(search);
-    }
     let tracks = conn
         .prepare_cached(&sql)?
         .query_map(bound.as_slice(), |row| TrackRow::from_row(row, 0))?
         .collect::<Result<_, _>>()?;
 
-    let total = match &search {
-        Some(search) => conn
+    let total = match (&search, only) {
+        (None, Some(only)) => only.len() as u32,
+        (Some(search), Some(only)) => conn
+            .prepare_cached(
+                "SELECT count(*) FROM tracks AS t
+                 WHERE t.id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?1)
+                   AND t.id IN rarray(?2)",
+            )?
+            .query_row(params![search, only], |row| row.get(0))?,
+        (Some(search), None) => conn
             .prepare_cached("SELECT count(*) FROM tracks_fts WHERE tracks_fts MATCH ?1")?
             .query_row(params![search], |row| row.get(0))?,
-        None => conn
+        (None, None) => conn
             .prepare_cached("SELECT count(*) FROM tracks")?
             .query_row([], |row| row.get(0))?,
     };
@@ -235,7 +257,7 @@ mod tests {
         limit: u32,
     ) -> (Vec<String>, u32) {
         db.read(|conn| {
-            let page = track_page(conn, text, sort, descending, offset, limit)?;
+            let page = track_page(conn, text, None, sort, descending, offset, limit)?;
             Ok::<_, DbError>((
                 page.tracks.into_iter().map(|track| track.title).collect(),
                 page.total,
@@ -347,7 +369,8 @@ mod tests {
             "{",
         ] {
             db.read(|conn| {
-                track_page(conn, Some(text), TrackSort::Title, false, 0, 10).map_err(DbError::from)
+                track_page(conn, Some(text), None, TrackSort::Title, false, 0, 10)
+                    .map_err(DbError::from)
             })
             .unwrap_or_else(|error| panic!("{text:?}: {error}"));
         }
@@ -382,7 +405,7 @@ mod tests {
         .unwrap();
         let page = db
             .read(|conn| {
-                track_page(conn, None, TrackSort::Title, false, 0, 10).map_err(DbError::from)
+                track_page(conn, None, None, TrackSort::Title, false, 0, 10).map_err(DbError::from)
             })
             .unwrap();
         assert_eq!(page.total, 3);

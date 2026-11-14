@@ -16,11 +16,34 @@ export function registerAppActions(): void {
   onActionError((message) => app.fail(message));
 
   registerAction({
-    id: "nav.library",
+    id: "nav.browse",
     label: "Library",
     shortcut: null,
     run: () => {
+      app.view = { kind: app.browse };
+    },
+  });
+  registerAction({
+    id: "nav.library",
+    label: "Songs",
+    shortcut: null,
+    run: () => {
       app.view = { kind: "library" };
+    },
+  });
+  registerAction({
+    id: "nav.artists",
+    label: "Artists",
+    shortcut: null,
+    run: () => {
+      app.view = { kind: "artists" };
+    },
+  });
+  registerAction({
+    id: "nav.artist",
+    label: "Open artist",
+    run: ({ id }) => {
+      app.view = { kind: "artist", id };
     },
   });
   registerAction({
@@ -34,8 +57,8 @@ export function registerAppActions(): void {
   registerAction({
     id: "nav.album",
     label: "Open album",
-    run: ({ id }) => {
-      app.view = { kind: "album", id };
+    run: ({ id, from }) => {
+      app.view = from ? { kind: "album", id, from } : { kind: "album", id };
     },
   });
   registerAction({
@@ -325,8 +348,11 @@ export function registerAppActions(): void {
     label: "Search",
     shortcut: "ctrl+f",
     run: () => {
-      // The album grid has a search of its own; anywhere else searches the track list.
-      if (app.view.kind !== "albums") app.view = { kind: "library" };
+      // Songs, artists and albums each have a search; anywhere else searches the songs.
+      const kind = app.view.kind;
+      if (kind !== "library" && kind !== "artists" && kind !== "albums") {
+        app.view = { kind: "library" };
+      }
       app.searchFocusRequests++;
     },
   });

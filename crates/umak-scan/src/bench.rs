@@ -219,6 +219,42 @@ pub fn queries(database: &str) -> Result<QueryReport, String> {
     }
     timings.push(summarize("album with its tracks", samples));
 
+    let artist_page = |query: Option<&str>, offset: u64| json!({ "query": query, "offset": offset, "limit": PAGE });
+    let (_, first) = timed(&core, "library.artists.page", artist_page(None, 0))?;
+    let artists = first["total"].as_u64().unwrap_or(0);
+    let mut artist_ids = Vec::new();
+    let mut samples = Vec::with_capacity(LIST_RUNS);
+    for offset in offsets(artists, LIST_RUNS) {
+        let (ms, page) = timed(&core, "library.artists.page", artist_page(None, offset))?;
+        samples.push(ms);
+        if let Some(id) = page["artists"][0]["id"].as_str() {
+            artist_ids.push(id.to_owned());
+        }
+    }
+    timings.push(summarize("artist page, any position", samples));
+    let mut samples = Vec::with_capacity(typed.len());
+    for text in &typed {
+        samples.push(timed(&core, "library.artists.page", artist_page(Some(text), 0))?.0);
+    }
+    timings.push(summarize("artist search, per keystroke", samples));
+    // The artists with the most tracks are the slowest to open.
+    for artist in first["artists"].as_array().into_iter().flatten() {
+        if artist["trackCount"].as_u64().unwrap_or(0) > 1000
+            && let Some(id) = artist["id"].as_str()
+        {
+            artist_ids.push(id.to_owned());
+        }
+    }
+    let (mut opened, mut tracks) = (Vec::new(), Vec::new());
+    for id in &artist_ids {
+        opened.push(timed(&core, "library.artists.get", json!({ "id": id }))?.0);
+        let mut args = page_args(None, "album", false, 0);
+        args["artist"] = json!(id);
+        tracks.push(timed_page(&core, args)?.0);
+    }
+    timings.push(summarize("artist with their albums", opened));
+    timings.push(summarize("artist's tracks, first page", tracks));
+
     for by in ["audio", "tags"] {
         let mut samples = Vec::with_capacity(LIST_RUNS);
         for _ in 0..LIST_RUNS {

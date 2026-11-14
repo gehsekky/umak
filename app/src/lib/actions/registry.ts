@@ -8,9 +8,12 @@ import { actionForKey, type ChangedShortcuts } from "./shortcuts";
 
 /** Actions and the arguments they take. */
 export type ActionMap = {
+  "nav.browse": void;
   "nav.library": void;
+  "nav.artists": void;
+  "nav.artist": { id: string };
   "nav.albums": void;
-  "nav.album": { id: string };
+  "nav.album": { id: string; from?: { id: string; name: string } };
   "nav.folders": void;
   "nav.playlist": { id: string };
   "nav.settings": void;

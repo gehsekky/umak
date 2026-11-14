@@ -18,7 +18,7 @@ use crate::library::{MAX_PAGE, TRACK_COLUMNS, TrackRow, search_query};
 
 /// The columns `AlbumRow::from_row` reads, for a query that names `albums` as `a`. Art is
 /// current only while the track's size and mtime match those it was read from.
-const ALBUM_COLUMNS: &str = "a.public_id, a.title, a.album_artist_display, a.year,
+pub(crate) const ALBUM_COLUMNS: &str = "a.public_id, a.title, a.album_artist_display, a.year,
     (SELECT count(*) FROM tracks c WHERE c.album_id = a.id),
     (SELECT ca.art FROM tracks c JOIN track_art ca
         ON ca.track_id = c.id AND ca.size = c.size AND ca.mtime = c.mtime
@@ -73,7 +73,7 @@ pub struct AlbumRow {
 
 impl AlbumRow {
     /// Reads `ALBUM_COLUMNS`, which start at column `first`.
-    fn from_row(row: &Row<'_>, first: usize) -> rusqlite::Result<Self> {
+    pub(crate) fn from_row(row: &Row<'_>, first: usize) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(first)?,
             title: row.get(first + 1)?,
@@ -86,7 +86,7 @@ impl AlbumRow {
     }
 
     /// Sets `art_pending`, which only albums with no cover need.
-    fn check_pending(mut self, conn: &Connection) -> rusqlite::Result<Self> {
+    pub(crate) fn check_pending(mut self, conn: &Connection) -> rusqlite::Result<Self> {
         if self.art.is_none() {
             self.art_pending = unchecked_track(conn, &self.id)?.is_some();
         }

@@ -8,6 +8,8 @@
   import ImportView from "./lib/views/ImportView.svelte";
   import LibraryView from "./lib/views/LibraryView.svelte";
   import AlbumsView from "./lib/views/AlbumsView.svelte";
+  import ArtistsView from "./lib/views/ArtistsView.svelte";
+  import ArtistView from "./lib/views/ArtistView.svelte";
   import AlbumView from "./lib/views/AlbumView.svelte";
   import PlayerBar from "./lib/views/PlayerBar.svelte";
   import PlaylistView from "./lib/views/PlaylistView.svelte";
@@ -29,6 +31,8 @@
   registerAppActions();
   registerView("sidebar", { id: "navigation", component: Sidebar });
   registerView("main", { id: "library", component: LibraryView });
+  registerView("main", { id: "artists", component: ArtistsView });
+  registerView("main", { id: "artist", component: ArtistView });
   registerView("main", { id: "albums", component: AlbumsView });
   registerView("main", { id: "album", component: AlbumView });
   registerView("main", { id: "playlist", component: PlaylistView });
